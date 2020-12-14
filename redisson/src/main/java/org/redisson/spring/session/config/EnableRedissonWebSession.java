@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,36 +15,17 @@
  */
 package org.redisson.spring.session.config;
 
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
+import org.springframework.session.MapSession;
+
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
-import org.springframework.session.MapSession;
-import org.springframework.web.server.session.WebSessionManager;
-
 /**
- * Enables Redisson's Spring Session implementation backed by Redis and
- * exposes {@link WebSessionManager} as a bean named "webSessionManager".
- * <p>
- * Redisson instance should be registered as bean in application context.
- * Usage example:
- * <pre>
- * <code>
- * {@literal @Configuration}
- * {@literal EnableRedissonHttpSession}
- * public class RedissonHttpSessionConfig {
- *    
- *    {@literal @Bean}
- *    public RedissonClient redisson() {
- *        return Redisson.create();
- *    }
- *    
- * }
- * </code>
- * </pre>
+ * Deprecated. Use spring-session implementation based on Redisson Redis Data module
  * 
  * @author Nikita Koksharov
  *
@@ -53,6 +34,7 @@ import org.springframework.web.server.session.WebSessionManager;
 @Target(ElementType.TYPE)
 @Import(RedissonWebSessionConfiguration.class)
 @Configuration
+@Deprecated
 public @interface EnableRedissonWebSession {
 
     int maxInactiveIntervalInSeconds() default MapSession.DEFAULT_MAX_INACTIVE_INTERVAL_SECONDS;

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,8 @@
  */
 package org.redisson.api;
 
-import io.reactivex.Single;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Single;
 
 /**
  * RingBuffer based queue evicts elements from the head if queue capacity became full.
@@ -38,7 +39,15 @@ public interface RRingBufferRx<V> extends RQueueRx<V> {
      *         <code>false</code> if capacity already set
      */
     Single<Boolean> trySetCapacity(int capacity);
-    
+
+    /**
+     * Sets capacity of the queue and overrides current value.
+     * Trims queue if previous capacity value was greater than new.
+     *
+     * @param capacity - queue capacity
+     */
+    Completable setCapacity(int capacity);
+
     /**
      * Returns remaining capacity of this queue
      * 

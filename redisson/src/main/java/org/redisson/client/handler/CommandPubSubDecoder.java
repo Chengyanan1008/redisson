@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,19 +15,13 @@
  */
 package org.redisson.client.handler;
 
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
 import org.redisson.client.ChannelName;
+import org.redisson.client.RedisClientConfig;
 import org.redisson.client.RedisPubSubConnection;
 import org.redisson.client.codec.ByteArrayCodec;
+import org.redisson.client.codec.StringCodec;
 import org.redisson.client.protocol.CommandData;
 import org.redisson.client.protocol.Decoder;
 import org.redisson.client.protocol.QueueCommand;
@@ -40,8 +34,9 @@ import org.redisson.client.protocol.pubsub.PubSubPatternMessage;
 import org.redisson.client.protocol.pubsub.PubSubStatusMessage;
 import org.redisson.misc.LogHelper;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.Channel;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Redis Publish Subscribe protocol decoder
@@ -56,11 +51,11 @@ public class CommandPubSubDecoder extends CommandDecoder {
     private final Map<ChannelName, PubSubEntry> entries = new HashMap<>();
     private final Map<PubSubKey, CommandData<Object, Object>> commands = new ConcurrentHashMap<>();
 
-    private final boolean keepOrder;
-    
-    public CommandPubSubDecoder(ExecutorService executor, boolean keepOrder, boolean decodeInExecutor) {
-        super(executor, decodeInExecutor);
-        this.keepOrder = keepOrder;
+    private final RedisClientConfig config;
+
+    public CommandPubSubDecoder(RedisClientConfig config) {
+        super(config.getAddress().getScheme());
+        this.config = config;
     }
 
     public void addPubSubCommand(ChannelName channel, CommandData<Object, Object> data) {
@@ -101,7 +96,7 @@ public class CommandPubSubDecoder extends CommandDecoder {
     protected void decodeResult(CommandData<Object, Object> data, List<Object> parts, Channel channel,
             Object result) throws IOException {
         try {
-            if (executor.isShutdown()) {
+            if (config.getExecutor().isShutdown()) {
                 return;
             }
         } catch (IllegalStateException e) {
@@ -128,14 +123,14 @@ public class CommandPubSubDecoder extends CommandDecoder {
                         channelName = ((PubSubPatternMessage) result).getPattern();
                     }
                     PubSubEntry entry = entries.remove(channelName);
-                    if (keepOrder) {
+                    if (config.isKeepAlive()) {
                         enqueueMessage(result, pubSubConnection, entry);
                     }
                 }
             }
             
             
-            if (keepOrder) {
+            if (config.isKeepAlive()) {
                 if (result instanceof PubSubPatternMessage) {
                     channelName = ((PubSubPatternMessage) result).getPattern();
                 }
@@ -144,7 +139,7 @@ public class CommandPubSubDecoder extends CommandDecoder {
                     enqueueMessage(result, pubSubConnection, entry);
                 }
             } else {
-                executor.execute(new Runnable() {
+                config.getExecutor().execute(new Runnable() {
                     @Override
                     public void run() {
                         if (result instanceof PubSubStatusMessage) {
@@ -173,7 +168,7 @@ public class CommandPubSubDecoder extends CommandDecoder {
             return;
         }
         
-        executor.execute(() -> {
+        config.getExecutor().execute(() -> {
             try {
                 while (true) {
                     Message result = entry.getQueue().poll();
@@ -214,12 +209,20 @@ public class CommandPubSubDecoder extends CommandDecoder {
             return commandData.getCommand().getReplayMultiDecoder();
         } else if ("message".equals(command)) {
             byte[] channelName = (byte[]) parts.get(1);
-            return entries.get(new ChannelName(channelName)).getDecoder();
+            PubSubEntry entry = entries.get(new ChannelName(channelName));
+            if (entry == null) {
+                return null;
+            }
+            return entry.getDecoder();
         } else if ("pmessage".equals(command)) {
             byte[] patternName = (byte[]) parts.get(1);
-            return entries.get(new ChannelName(patternName)).getDecoder();
+            PubSubEntry entry = entries.get(new ChannelName(patternName));
+            if (entry == null) {
+                return null;
+            }
+            return entry.getDecoder();
         } else if ("pong".equals(command)) {
-            return new ListObjectDecoder<Object>(0);
+            return new ListObjectDecoder<>(0);
         }
 
         return data.getCommand().getReplayMultiDecoder();
@@ -249,7 +252,7 @@ public class CommandPubSubDecoder extends CommandDecoder {
         }
         
         if (data != null && data.getCommand().getName().equals(RedisCommands.PING.getName())) {
-            return data.getCodec().getValueDecoder();
+            return StringCodec.INSTANCE.getValueDecoder();
         }
         
         return super.selectDecoder(data, parts);

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package org.redisson;
 
+import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
@@ -24,9 +25,12 @@ import java.util.Map;
  * @author Nikita Koksharov
  *
  */
-public class MapWriterTask {
+public class MapWriterTask implements Serializable {
 
     public static class Remove extends MapWriterTask {
+
+        public Remove() {
+        }
 
         public Remove(Collection<?> keys) {
             super(keys);

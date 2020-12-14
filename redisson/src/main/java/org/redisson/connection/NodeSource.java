@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,8 +33,20 @@ public class NodeSource {
     private Redirect redirect;
     private MasterSlaveEntry entry;
 
+    public NodeSource(NodeSource nodeSource, RedisClient redisClient) {
+        this.slot = nodeSource.slot;
+        this.addr = nodeSource.addr;
+        this.redisClient = redisClient;
+        this.redirect = nodeSource.getRedirect();
+        this.entry = nodeSource.getEntry();
+    }
+
     public NodeSource(MasterSlaveEntry entry) {
         this.entry = entry;
+    }
+
+    public NodeSource(Integer slot) {
+        this.slot = slot;
     }
 
     public NodeSource(MasterSlaveEntry entry, RedisClient redisClient) {
@@ -72,7 +84,7 @@ public class NodeSource {
     public RedisClient getRedisClient() {
         return redisClient;
     }
-    
+
     public RedisURI getAddr() {
         return addr;
     }

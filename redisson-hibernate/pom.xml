@@ -4,14 +4,14 @@
     <parent>
         <groupId>org.redisson</groupId>
         <artifactId>redisson-parent</artifactId>
-        <version>3.11.1-SNAPSHOT</version>
+        <version>3.14.1-SNAPSHOT</version>
         <relativePath>../</relativePath>
     </parent>
 
     <artifactId>redisson-hibernate</artifactId>
     <packaging>pom</packaging>
 
-    <name>Redisson/Hibernate</name>
+    <name>Redisson/Hibernate cache</name>
 
     <modules>
         <module>redisson-hibernate-4</module>
@@ -49,13 +49,13 @@
         <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
-            <version>4.12</version>
+            <version>4.13.1</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <version>1.4.192</version>
+            <version>1.4.200</version>
             <scope>test</scope>
         </dependency>
 

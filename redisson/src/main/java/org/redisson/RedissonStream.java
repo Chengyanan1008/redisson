@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,7 @@
  */
 package org.redisson;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 import org.redisson.api.PendingEntry;
@@ -35,10 +30,10 @@ import org.redisson.client.codec.Codec;
 import org.redisson.client.codec.StringCodec;
 import org.redisson.client.protocol.RedisCommand;
 import org.redisson.client.protocol.RedisCommands;
-import org.redisson.client.protocol.decoder.ListMultiDecoder;
-import org.redisson.client.protocol.decoder.ObjectListReplayDecoder;
+import org.redisson.client.protocol.decoder.CodecDecoder;
+import org.redisson.client.protocol.decoder.ListMultiDecoder2;
+import org.redisson.client.protocol.decoder.ObjectMapDecoder;
 import org.redisson.client.protocol.decoder.StreamInfoDecoder;
-import org.redisson.client.protocol.decoder.StreamInfoMapDecoder;
 import org.redisson.command.CommandAsyncExecutor;
 
 /**
@@ -50,18 +45,12 @@ import org.redisson.command.CommandAsyncExecutor;
  */
 public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K, V> {
 
-    private final RedisCommand<StreamInfo<Object, Object>> xinfoStreamCommand;
-    
     public RedissonStream(Codec codec, CommandAsyncExecutor connectionManager, String name) {
         super(codec, connectionManager, name);
-        xinfoStreamCommand = new RedisCommand<StreamInfo<Object, Object>>("XINFO", "STREAM",
-                new ListMultiDecoder(new StreamInfoMapDecoder(getCodec()), new ObjectListReplayDecoder<String>(ListMultiDecoder.RESET), new StreamInfoDecoder()));
     }
 
     public RedissonStream(CommandAsyncExecutor connectionManager, String name) {
         super(connectionManager, name);
-        xinfoStreamCommand = new RedisCommand<StreamInfo<Object, Object>>("XINFO", "STREAM",
-                new ListMultiDecoder(new StreamInfoMapDecoder(getCodec()), new ObjectListReplayDecoder<String>(ListMultiDecoder.RESET), new StreamInfoDecoder()));
     }
 
     protected void checkKey(Object key) {
@@ -101,9 +90,7 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
         List<Object> params = new ArrayList<Object>();
         params.add(getName());
         params.add(groupName);
-        for (StreamMessageId id : ids) {
-            params.add(id);
-        }
+        params.addAll(Arrays.asList(ids));
         
         return commandExecutor.writeAsync(getName(), StringCodec.INSTANCE, RedisCommands.XACK, params.toArray());
     }
@@ -174,7 +161,7 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
         
         params.add("JUSTID");
         
-        return commandExecutor.readAsync(getName(), StringCodec.INSTANCE, RedisCommands.XCLAIM_IDS, params.toArray());
+        return commandExecutor.writeAsync(getName(), StringCodec.INSTANCE, RedisCommands.XCLAIM_IDS, params.toArray());
     }
     
     @Override
@@ -190,7 +177,7 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
             params.add(id.toString());
         }
         
-        return commandExecutor.readAsync(getName(), codec, RedisCommands.XCLAIM, params.toArray());
+        return commandExecutor.writeAsync(getName(), codec, RedisCommands.XCLAIM, params.toArray());
     }
 
     @Override
@@ -245,9 +232,9 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
         }
 
         if (timeout > 0) {
-            return commandExecutor.readAsync(getName(), codec, RedisCommands.XREADGROUP_BLOCKING_SINGLE, params.toArray());
+            return commandExecutor.writeAsync(getName(), codec, RedisCommands.XREADGROUP_BLOCKING_SINGLE, params.toArray());
         }
-        return commandExecutor.readAsync(getName(), codec, RedisCommands.XREADGROUP_SINGLE, params.toArray());
+        return commandExecutor.writeAsync(getName(), codec, RedisCommands.XREADGROUP_SINGLE, params.toArray());
     }
     
     @Override
@@ -408,9 +395,7 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
         
         params.add("STREAMS");
         params.add(getName());
-        for (String key : keyToId.keySet()) {
-            params.add(key);
-        }
+        params.addAll(keyToId.keySet());
 
         if (id == null) {
             params.add(">");
@@ -423,9 +408,9 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
         }
 
         if (timeout > 0) {
-            return commandExecutor.readAsync(getName(), codec, RedisCommands.XREADGROUP_BLOCKING, params.toArray());
+            return commandExecutor.writeAsync(getName(), codec, RedisCommands.XREADGROUP_BLOCKING, params.toArray());
         }
-        return commandExecutor.readAsync(getName(), codec, RedisCommands.XREADGROUP, params.toArray());
+        return commandExecutor.writeAsync(getName(), codec, RedisCommands.XREADGROUP, params.toArray());
     }
 
 
@@ -686,9 +671,7 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
         
         params.add("STREAMS");
         params.add(getName());
-        for (String key : keyToId.keySet()) {
-            params.add(key);
-        }
+        params.addAll(keyToId.keySet());
         
         params.add(id);
         for (StreamMessageId nextId : keyToId.values()) {
@@ -897,9 +880,7 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
     public RFuture<Long> removeAsync(StreamMessageId... ids) {
         List<Object> params = new ArrayList<Object>();
         params.add(getName());
-        for (StreamMessageId id : ids) {
-            params.add(id);
-        }
+        params.addAll(Arrays.asList(ids));
 
         return commandExecutor.writeAsync(getName(), StringCodec.INSTANCE, RedisCommands.XDEL, params.toArray());
     }
@@ -911,12 +892,12 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
 
     @Override
     public RFuture<Long> trimAsync(int count) {
-        return commandExecutor.writeAsync(getName(), StringCodec.INSTANCE, RedisCommands.XTRIM, "MAXLEN", count);
+        return commandExecutor.writeAsync(getName(), StringCodec.INSTANCE, RedisCommands.XTRIM, getName(), "MAXLEN", count);
     }
 
     @Override
     public RFuture<Long> trimNonStrictAsync(int count) {
-        return commandExecutor.writeAsync(getName(), StringCodec.INSTANCE, RedisCommands.XTRIM, "MAXLEN", "~", count);
+        return commandExecutor.writeAsync(getName(), StringCodec.INSTANCE, RedisCommands.XTRIM, getName(), "MAXLEN", "~", count);
     }
 
     @Override
@@ -966,6 +947,12 @@ public class RedissonStream<K, V> extends RedissonExpirable implements RStream<K
 
     @Override
     public RFuture<StreamInfo<K, V>> getInfoAsync() {
+        RedisCommand<StreamInfo<Object, Object>> xinfoStreamCommand = new RedisCommand<>("XINFO", "STREAM",
+                new ListMultiDecoder2(
+                        new StreamInfoDecoder(),
+                        new CodecDecoder(),
+                        new ObjectMapDecoder(getCodec(), false)));
+
         return commandExecutor.readAsync(getName(), StringCodec.INSTANCE, xinfoStreamCommand, getName());
     }
 

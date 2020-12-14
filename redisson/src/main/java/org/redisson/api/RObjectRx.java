@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,20 +19,34 @@ import java.util.concurrent.TimeUnit;
 
 import org.redisson.client.codec.Codec;
 
-import io.reactivex.Completable;
-import io.reactivex.Single;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Single;
 
 /**
- * Base interface for all Redisson objects
+ * Base RxJava2 interface for all Redisson objects
  *
  * @author Nikita Koksharov
  *
  */
 public interface RObjectRx {
 
+    /**
+     * Returns number of seconds spent since last write or read operation over this object.
+     *
+     * @return number of seconds
+     */
+    Single<Long> getIdleTime();
+
     String getName();
     
     Codec getCodec();
+    
+    /**
+     * Returns bytes amount used by object in Redis memory. 
+     * 
+     * @return size in bytes
+     */
+    Single<Long> sizeInMemory();
     
     /**
      * Restores object using its state returned by {@link #dump()} method.

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -186,9 +186,8 @@ public abstract class BaseRemoteService {
     }
 
     protected RequestId generateRequestId() {
-        byte[] id = new byte[17];
+        byte[] id = new byte[16];
         ThreadLocalRandom.current().nextBytes(id);
-        id[0] = 00;
         return new RequestId(id);
     }
 

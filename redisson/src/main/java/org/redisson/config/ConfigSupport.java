@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,10 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.fasterxml.jackson.databind.SerializationFeature;
+import org.redisson.api.NatMapper;
 import org.redisson.api.RedissonNodeInitializer;
+import org.redisson.client.NettyHook;
 import org.redisson.client.codec.Codec;
 import org.redisson.cluster.ClusterConnectionManager;
 import org.redisson.codec.ReferenceCodecProvider;
@@ -101,11 +104,14 @@ public class ConfigSupport {
     }
     
     private String resolveEnvParams(String content) {
-        Pattern pattern = Pattern.compile("\\$\\{(\\w+(:-.+)?)\\}");
+        Pattern pattern = Pattern.compile("\\$\\{([\\w\\.]+(:-.+?)?)\\}");
         Matcher m = pattern.matcher(content);
         while (m.find()) {
             String[] parts = m.group(1).split(":-");
             String v = System.getenv(parts[0]);
+            if (v == null) {
+                v = System.getProperty(parts[0]);
+            }
             if (v != null) {
                 content = content.replace(m.group(), v);
             } else if (parts.length == 2) {
@@ -235,11 +241,14 @@ public class ConfigSupport {
         mapper.addMixIn(Codec.class, ClassMixIn.class);
         mapper.addMixIn(RedissonNodeInitializer.class, ClassMixIn.class);
         mapper.addMixIn(LoadBalancer.class, ClassMixIn.class);
+        mapper.addMixIn(NatMapper.class, ClassMixIn.class);
+        mapper.addMixIn(NettyHook.class, ClassMixIn.class);
         
         FilterProvider filterProvider = new SimpleFilterProvider()
                 .addFilter("classFilter", SimpleBeanPropertyFilter.filterOutAllExcept());
         mapper.setFilterProvider(filterProvider);
         mapper.setSerializationInclusion(Include.NON_NULL);
+        mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
 
         if (classLoader != null) {
             TypeFactory tf = TypeFactory.defaultInstance()

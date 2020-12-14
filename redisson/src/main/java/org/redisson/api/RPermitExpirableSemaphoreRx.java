@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,12 @@ package org.redisson.api;
 
 import java.util.concurrent.TimeUnit;
 
-import io.reactivex.Completable;
-import io.reactivex.Single;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 
 /**
- * RxJava2 interface for Semaphore object with support of lease time parameter for each acquired permit.
+ * RxJava2 interface for Semaphore object with lease time parameter support for each acquired permit.
  * 
  * <p>Each permit identified by own id and could be released only using its id.
  * Permit id is a 128-bits unique random identifier generated each time during acquiring.
@@ -92,7 +93,7 @@ public interface RPermitExpirableSemaphoreRx extends RExpirableRx {
      * @return permit id if a permit was acquired and {@code null}
      *         otherwise
      */
-    Single<String> tryAcquire();
+    Maybe<String> tryAcquire();
 
     /**
      * Acquires a permit from this semaphore, if one becomes available
@@ -125,7 +126,7 @@ public interface RPermitExpirableSemaphoreRx extends RExpirableRx {
      * @return permit id if a permit was acquired and {@code null}
      *         if the waiting time elapsed before a permit was acquired
      */
-    Single<String> tryAcquire(long waitTime, TimeUnit unit);
+    Maybe<String> tryAcquire(long waitTime, TimeUnit unit);
 
     /**
      * Acquires a permit with defined lease time from this semaphore,
@@ -160,7 +161,7 @@ public interface RPermitExpirableSemaphoreRx extends RExpirableRx {
      * @return permit id if a permit was acquired and {@code null}
      *         if the waiting time elapsed before a permit was acquired
      */
-    Single<String> tryAcquire(long waitTime, long leaseTime, TimeUnit unit);
+    Maybe<String> tryAcquire(long waitTime, long leaseTime, TimeUnit unit);
 
     /**
      * Releases a permit by its id, returning it to the semaphore.

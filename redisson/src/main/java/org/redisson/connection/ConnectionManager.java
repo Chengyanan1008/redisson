@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@ package org.redisson.connection;
 
 import java.net.InetSocketAddress;
 import java.util.Collection;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.redisson.ElementsSubscribeService;
 import org.redisson.api.NodeType;
 import org.redisson.api.RFuture;
 import org.redisson.client.RedisClient;
@@ -48,10 +48,12 @@ public interface ConnectionManager {
     
     RedisURI applyNatMap(RedisURI address);
     
-    UUID getId();
+    String getId();
     
     CommandSyncService getCommandExecutor();
-    
+
+    ElementsSubscribeService getElementsSubscribeService();
+
     PublishSubscribeService getSubscribeService();
     
     ExecutorService getExecutor();
@@ -79,7 +81,9 @@ public interface ConnectionManager {
     Codec getCodec();
 
     Collection<MasterSlaveEntry> getEntrySet();
-    
+
+    MasterSlaveEntry getEntry(String name);
+
     MasterSlaveEntry getEntry(int slot);
     
     MasterSlaveEntry getEntry(InetSocketAddress address);

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,15 @@
  */
 package org.redisson.eviction;
 
-import java.util.Deque;
-import java.util.LinkedList;
-import java.util.concurrent.TimeUnit;
-
+import io.netty.util.concurrent.ScheduledFuture;
 import org.redisson.api.RFuture;
 import org.redisson.command.CommandAsyncExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Deque;
+import java.util.LinkedList;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 
@@ -36,21 +37,28 @@ abstract class EvictionTask implements Runnable {
     final Deque<Integer> sizeHistory = new LinkedList<Integer>();
     final int minDelay;
     final int maxDelay;
-    final int keysLimit = 100;
+    final int keysLimit;
     
     int delay = 5;
 
     final CommandAsyncExecutor executor;
+
+    ScheduledFuture<?> scheduledFuture;
     
     EvictionTask(CommandAsyncExecutor executor) {
         super();
         this.executor = executor;
         this.minDelay = executor.getConnectionManager().getCfg().getMinCleanUpDelay();
         this.maxDelay = executor.getConnectionManager().getCfg().getMaxCleanUpDelay();
+        this.keysLimit = executor.getConnectionManager().getCfg().getCleanUpKeysAmount();
     }
 
     public void schedule() {
-        executor.getConnectionManager().getGroup().schedule(this, delay, TimeUnit.SECONDS);
+        scheduledFuture = executor.getConnectionManager().getGroup().schedule(this, delay, TimeUnit.SECONDS);
+    }
+
+    public ScheduledFuture<?> getScheduledFuture() {
+        return scheduledFuture;
     }
 
     abstract RFuture<Integer> execute();

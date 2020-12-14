@@ -1,31 +1,30 @@
 package org.redisson.spring.data.connection;
 
-import java.io.IOException;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-
-import static org.assertj.core.api.Assertions.*;
-import org.junit.After;
 import org.junit.AfterClass;
-import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.redisson.ClusterRunner;
+import org.redisson.ClusterRunner.ClusterProcesses;
 import org.redisson.RedisRunner;
 import org.redisson.RedisRunner.FailedToStartRedisException;
 import org.redisson.Redisson;
-import org.redisson.ClusterRunner.ClusterProcesses;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
 import org.redisson.config.SubscriptionMode;
 import org.redisson.connection.MasterSlaveConnectionManager;
 import org.redisson.connection.balancer.RandomLoadBalancer;
+import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.data.redis.connection.ClusterInfo;
 import org.springframework.data.redis.connection.RedisClusterNode;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.RedisNode.NodeType;
 import org.springframework.data.redis.core.types.RedisClientInfo;
+
+import java.io.IOException;
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.redisson.connection.MasterSlaveConnectionManager.MAX_SLOT;
 
 public class RedissonClusterConnectionTest {
 
@@ -179,6 +178,16 @@ public class RedissonClusterConnectionTest {
         assertThat(info.size()).isGreaterThan(10);
     }
 
+    @Test
+    public void testDel() {
+        List<byte[]> keys = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            byte[] key = ("test" + i).getBytes();
+            keys.add(key);
+            connection.set(key, ("test" + i).getBytes());
+        }
+        connection.del(keys.toArray(new byte[0][]));
+    }
     
     @Test
     public void testResetConfigStats() {
@@ -218,5 +227,12 @@ public class RedissonClusterConnectionTest {
         RedisClusterNode master = map.keySet().iterator().next();
         return master;
     }
-    
+
+    @Test
+    public void testConnectionFactoryReturnsClusterConnection() {
+        RedisConnectionFactory connectionFactory = new RedissonConnectionFactory(redisson);
+
+        assertThat(connectionFactory.getConnection()).isInstanceOf(RedissonClusterConnection.class);
+    }
+
 }

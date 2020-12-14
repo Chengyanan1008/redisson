@@ -11,9 +11,29 @@ import org.redisson.api.RRingBuffer;
 public class RedissonRingBufferTest extends BaseTest {
 
     @Test
+    public void testSetCapacity() {
+        RRingBuffer<Integer> buffer = redisson.getRingBuffer("test");
+        buffer.trySetCapacity(5);
+        for (int i = 0; i < 10; i++) {
+            buffer.add(i);
+        }
+
+        assertThat(buffer).containsExactly(5, 6, 7, 8, 9);
+        buffer.setCapacity(3);
+        assertThat(buffer).containsExactly(7, 8, 9);
+
+        RRingBuffer<Integer> buffer2 = redisson.getRingBuffer("test2");
+        buffer2.setCapacity(3);
+        for (int i = 0; i < 10; i++) {
+            buffer2.add(i);
+        }
+        assertThat(buffer2).containsExactly(7, 8, 9);
+
+    }
+
+    @Test
     public void testAdd() {
         RRingBuffer<Integer> buffer = redisson.getRingBuffer("test");
-        assertThat(buffer.remainingCapacity()).isZero();
         assertThat(buffer.capacity()).isZero();
         buffer.trySetCapacity(10);
         assertThat(buffer.capacity()).isEqualTo(10);
@@ -47,7 +67,6 @@ public class RedissonRingBufferTest extends BaseTest {
     @Test
     public void testAddAll() {
         RRingBuffer<Integer> buffer = redisson.getRingBuffer("test");
-        assertThat(buffer.remainingCapacity()).isZero();
         assertThat(buffer.capacity()).isZero();
         buffer.trySetCapacity(10);
         assertThat(buffer.capacity()).isEqualTo(10);
@@ -55,7 +74,7 @@ public class RedissonRingBufferTest extends BaseTest {
         List<Integer> s = Arrays.asList(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         buffer.addAll(s);
         
-        assertThat(buffer).containsExactly((Integer[]) s.toArray());
+        assertThat(buffer).containsExactly(s.toArray(new Integer[s.size()]));
         assertThat(buffer.capacity()).isEqualTo(10);
         assertThat(buffer.remainingCapacity()).isEqualTo(0);
 

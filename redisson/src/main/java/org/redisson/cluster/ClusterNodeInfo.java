@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,20 @@ import org.redisson.misc.RedisURI;
  */
 public class ClusterNodeInfo {
 
-    public enum Flag {NOFLAGS, SLAVE, MASTER, MYSELF, FAIL, HANDSHAKE, NOADDR};
+    public enum Flag {
+        NOFLAGS("noflags"), SLAVE("slave"), MASTER("master"), MYSELF("myself"),
+        FAIL("fail"), EVENTUAL_FAIL("fail?"), HANDSHAKE("handshake"), NOADDR("noaddr");
+
+        private final String value;
+
+        Flag(String value) {
+            this.value = value;
+        }
+
+        public String getValue() {
+            return value;
+        }
+    };
 
     private final String nodeInfo;
     

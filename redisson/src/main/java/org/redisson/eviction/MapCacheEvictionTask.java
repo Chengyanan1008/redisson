@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,7 +74,7 @@ public class MapCacheEvictionTask extends EvictionTask {
                     + "end;"  
                 + "end;" 
               + "if #expiredKeys1 > 0 then "
-                  + "redis.call('zrem', KEYS[4], unpack(expiredKeys1)); "
+                  + "redis.call('zrem', KEYS[5], unpack(expiredKeys1)); "
                   + "redis.call('zrem', KEYS[3], unpack(expiredKeys1)); "
                   + "redis.call('zrem', KEYS[2], unpack(expiredKeys1)); "
                   + "redis.call('hdel', KEYS[1], unpack(expiredKeys1)); "
@@ -92,7 +92,7 @@ public class MapCacheEvictionTask extends EvictionTask {
                   + "end;"  
               + "end;" 
               + "if #expiredKeys2 > 0 then "
-                  + "redis.call('zrem', KEYS[4], unpack(expiredKeys2)); "
+                  + "redis.call('zrem', KEYS[5], unpack(expiredKeys2)); "
                   + "redis.call('zrem', KEYS[3], unpack(expiredKeys2)); "
                   + "redis.call('zrem', KEYS[2], unpack(expiredKeys2)); "
                   + "redis.call('hdel', KEYS[1], unpack(expiredKeys2)); "

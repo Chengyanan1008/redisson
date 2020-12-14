@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,66 +15,22 @@
  */
 package org.redisson.jcache;
 
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.stream.Collectors;
-
-import javax.cache.Cache;
-import javax.cache.CacheException;
-import javax.cache.CacheManager;
-import javax.cache.configuration.CacheEntryListenerConfiguration;
-import javax.cache.configuration.Configuration;
-import javax.cache.configuration.Factory;
-import javax.cache.event.CacheEntryCreatedListener;
-import javax.cache.event.CacheEntryEvent;
-import javax.cache.event.CacheEntryEventFilter;
-import javax.cache.event.CacheEntryExpiredListener;
-import javax.cache.event.CacheEntryListener;
-import javax.cache.event.CacheEntryRemovedListener;
-import javax.cache.event.CacheEntryUpdatedListener;
-import javax.cache.event.EventType;
-import javax.cache.integration.CacheLoader;
-import javax.cache.integration.CacheLoaderException;
-import javax.cache.integration.CacheWriter;
-import javax.cache.integration.CacheWriterException;
-import javax.cache.integration.CompletionListener;
-import javax.cache.processor.EntryProcessor;
-import javax.cache.processor.EntryProcessorException;
-import javax.cache.processor.EntryProcessorResult;
-
+import io.netty.buffer.ByteBuf;
 import org.redisson.Redisson;
-import org.redisson.RedissonBaseMapIterator;
 import org.redisson.RedissonObject;
 import org.redisson.ScanResult;
-import org.redisson.api.CacheAsync;
-import org.redisson.api.CacheReactive;
-import org.redisson.api.CacheRx;
-import org.redisson.api.RFuture;
-import org.redisson.api.RLock;
-import org.redisson.api.RSemaphore;
-import org.redisson.api.RTopic;
+import org.redisson.api.*;
 import org.redisson.api.listener.MessageListener;
 import org.redisson.client.RedisClient;
 import org.redisson.client.codec.Codec;
+import org.redisson.client.codec.StringCodec;
 import org.redisson.client.protocol.RedisCommand;
 import org.redisson.client.protocol.RedisCommand.ValueType;
 import org.redisson.client.protocol.RedisCommands;
 import org.redisson.client.protocol.decoder.MapScanResult;
+import org.redisson.codec.BaseEventCodec;
 import org.redisson.connection.decoder.MapGetAllDecoder;
+import org.redisson.iterator.RedissonBaseMapIterator;
 import org.redisson.jcache.JMutableEntry.Action;
 import org.redisson.jcache.configuration.JCacheConfiguration;
 import org.redisson.misc.Hash;
@@ -85,7 +41,25 @@ import org.redisson.reactive.ReactiveProxyBuilder;
 import org.redisson.rx.CommandRxService;
 import org.redisson.rx.RxProxyBuilder;
 
-import io.netty.buffer.ByteBuf;
+import javax.cache.Cache;
+import javax.cache.CacheException;
+import javax.cache.CacheManager;
+import javax.cache.configuration.CacheEntryListenerConfiguration;
+import javax.cache.configuration.Configuration;
+import javax.cache.configuration.Factory;
+import javax.cache.event.*;
+import javax.cache.integration.*;
+import javax.cache.processor.EntryProcessor;
+import javax.cache.processor.EntryProcessorException;
+import javax.cache.processor.EntryProcessorResult;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Collectors;
 
 /**
  * JCache implementation
@@ -257,14 +231,9 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
               + "if value == false then "
                   + "return nil; "
               + "end; "
-                  
-              + "local expireDate = 92233720368547758; "
+
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-              
-              + "if expireDate <= tonumber(ARGV[2]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                   + "return nil; "
               + "end; "
               + "return value; ",
@@ -318,13 +287,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                       + "return nil; "
                   + "end; "
                       
-                  + "local expireDate = 92233720368547758; "
                   + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-                  + "if expireDateScore ~= false then "
-                      + "expireDate = tonumber(expireDateScore); "
-                  + "end; "
-                  
-                  + "if expireDate <= tonumber(ARGV[2]) then "
+                  + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                       + "return nil; "
                   + "end; "
                   
@@ -339,13 +303,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return nil; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-              
-              + "if expireDate <= tonumber(ARGV[2]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                   + "return nil; "
               + "end; "
               
@@ -520,8 +479,13 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
         RFuture<List<Object>> res = commandExecutor.evalWriteAsync(getName(), codec, RedisCommands.EVAL_LIST,
               "local added = 0; "
             + "local syncs = 0; "
-            + "for i = 5, #ARGV, 2 do "
-              + "if redis.call('hexists', KEYS[1], ARGV[i]) == 1 then "
+            + "for i = 5, #ARGV, 2 do " +
+                "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[i]);" +
+                "local exists = redis.call('hexists', KEYS[1], ARGV[i]) == 1;" +
+                "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[3]) then " +
+                    "exists = false;" +
+                "end;" +
+                "if exists then "
                 + "if ARGV[2] == '0' then "
                     + "redis.call('hdel', KEYS[1], ARGV[i]); "
                     + "redis.call('zrem', KEYS[2], ARGV[i]); "
@@ -629,7 +593,12 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
         Long updateTimeout = getUpdateTimeout();
         
         RFuture<List<Object>> res = commandExecutor.evalWriteAsync(getName(), codec, RedisCommands.EVAL_LIST,
-                "if redis.call('hexists', KEYS[1], ARGV[4]) == 1 then "
+                "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[4]);" +
+                "local exists = redis.call('hexists', KEYS[1], ARGV[4]) == 1;" +
+                "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[3]) then " +
+                    "exists = false;" +
+                "end;" +
+                "if exists then "
                   + "if ARGV[2] == '0' then "
                       + "redis.call('hdel', KEYS[1], ARGV[4]); "
                       + "redis.call('zrem', KEYS[2], ARGV[4]); "
@@ -773,7 +742,12 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
         }
         
         return commandExecutor.evalWriteAsync(getName(), codec, RedisCommands.EVAL_BOOLEAN,
-                "if redis.call('hexists', KEYS[1], ARGV[2]) == 1 then "
+                "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[2]);" +
+                "local exists = redis.call('hexists', KEYS[1], ARGV[2]) == 1;" +
+                "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[4]) then " +
+                    "exists = false;" +
+                "end;" +
+                "if exists then "
                   + "return 0; "
               + "else "
                   + "if ARGV[1] ~= '-1' then "
@@ -790,7 +764,7 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "end; "
               + "end; ",
              Arrays.<Object>asList(getName(), getTimeoutSetName(), getCreatedChannelName()), 
-             creationTimeout, encodeMapKey(key), encodeMapValue(value));
+             creationTimeout, encodeMapKey(key), encodeMapValue(value), System.currentTimeMillis());
     }
     
     private boolean putIfAbsentValueLocked(K key, Object value) {
@@ -891,12 +865,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                           + "local key = ARGV[i+2]; "
 
                           + "if hasExpire then "
-                              + "local expireDate = 92233720368547758; "
                               + "local expireDateScore = redis.call('zscore', KEYS[2], key); "
-                              + "if expireDateScore ~= false then "
-                                  + "expireDate = tonumber(expireDateScore); "
-                              + "end; "
-                              + "if expireDate <= currentTime then "
+                              + "if expireDateScore ~= false and tonumber(expireDateScore) <= currentTime then "
                                   + "value = false; "
                               + "end; "
                           + "end; "
@@ -926,12 +896,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                                   + "local key = ARGV[i+2]; "
 
                                   + "if hasExpire then "
-                                      + "local expireDate = 92233720368547758; "
                                       + "local expireDateScore = redis.call('zscore', KEYS[2], key); "
-                                      + "if expireDateScore ~= false then "
-                                          + "expireDate = tonumber(expireDateScore); "
-                                      + "end; "
-                                      + "if expireDate <= currentTime then "
+                                      + "if expireDateScore ~= false and tonumber(expireDateScore) <= currentTime then "
                                           + "value = false; "
                                       + "end; "
                                   + "end; "
@@ -1004,14 +970,9 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   "if redis.call('hexists', KEYS[1], ARGV[2]) == 0 then "
                     + "return 0;"
                 + "end;"
-                      
-                + "local expireDate = 92233720368547758; "
+
                 + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[2]); "
-                + "if expireDateScore ~= false then "
-                    + "expireDate = tonumber(expireDateScore); "
-                + "end; "
-                    
-                + "if expireDate <= tonumber(ARGV[1]) then "
+                + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[1]) then "
                     + "return 0; "
                 + "end; "
                 + "return 1;",
@@ -1671,13 +1632,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return {0}; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[2]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[1]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[1]) then "
                   + "return {0}; "
               + "end; "
 
@@ -1761,6 +1717,9 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
         } else {
             RFuture<Boolean> result = removeValue(key);
             result.onComplete((res, ex) -> {
+                if (ex != null) {
+                    return;
+                }
                 if (res) {
                     cacheManager.getStatBean(this).addRemovals(1);
                 }
@@ -1779,13 +1738,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return 0; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[2]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                   + "return 0; "
               + "end; "
           
@@ -1831,13 +1785,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return 0; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[2]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                   + "return 0; "
               + "end; "
 
@@ -1992,13 +1941,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "if value == false then "
                       + "table.insert(nulls, i-3); "
                   + "else "
-                      + "local expireDate = 92233720368547758; "
                       + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[i]); "
-                      + "if expireDateScore ~= false then "
-                          + "expireDate = tonumber(expireDateScore); "
-                      + "end; "
-                      
-                      + "if expireDate <= tonumber(ARGV[1]) then "
+                      + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[1]) then "
                           + "table.insert(nulls, i-3); "
                       + "else "
                           + "redis.call('hdel', KEYS[1], ARGV[i]); "
@@ -2111,13 +2055,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return {nil}; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[2]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[1]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[1]) then "
                   + "return {nil}; "
               + "end; "
 
@@ -2255,13 +2194,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return 0; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[4]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[3]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[3]) then "
                   + "return 0; "
               + "end; "
 
@@ -2350,13 +2284,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return 0; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[4]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[3]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[3]) then "
                   + "return 0; "
               + "end; "
 
@@ -2522,13 +2451,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return 0; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[2]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                   + "return 0; "
               + "end; "
 
@@ -2562,13 +2486,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return nil; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[2]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                   + "return nil; "
               + "end; "
 
@@ -2600,13 +2519,8 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                   + "return nil; "
               + "end; "
                   
-              + "local expireDate = 92233720368547758; "
               + "local expireDateScore = redis.call('zscore', KEYS[2], ARGV[3]); "
-              + "if expireDateScore ~= false then "
-                  + "expireDate = tonumber(expireDateScore); "
-              + "end; "
-          
-              + "if expireDate <= tonumber(ARGV[2]) then "
+              + "if expireDateScore ~= false and tonumber(expireDateScore) <= tonumber(ARGV[2]) then "
                   + "return nil; "
               + "end; "
               
@@ -3036,7 +2950,20 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
         registerCacheEntryListener(cacheEntryListenerConfiguration, true);
     }
 
+    private JCacheEventCodec.OSType osType;
+
     private void registerCacheEntryListener(CacheEntryListenerConfiguration<K, V> cacheEntryListenerConfiguration, boolean addToConfig) {
+        if (osType == null) {
+            RFuture<Map<String, String>> serverFuture = commandExecutor.readAsync((String) null, StringCodec.INSTANCE, RedisCommands.INFO_SERVER);
+            serverFuture.syncUninterruptibly();
+            String os = serverFuture.getNow().get("os");
+            if (os.contains("Windows")) {
+                osType = BaseEventCodec.OSType.WINDOWS;
+            } else if (os.contains("NONSTOP")) {
+                osType = BaseEventCodec.OSType.HPNONSTOP;
+            }
+        }
+
         Factory<CacheEntryListener<? super K, ? super V>> factory = cacheEntryListenerConfiguration.getCacheEntryListenerFactory();
         final CacheEntryListener<? super K, ? super V> listener = factory.create();
         
@@ -3063,7 +2990,7 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                 channelName = getRemovedSyncChannelName();
             }
             
-            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, sync));
+            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, osType, sync));
             int listenerId = topic.addListener(List.class, new MessageListener<List<Object>>() {
                 @Override
                 public void onMessage(CharSequence channel, List<Object> msg) {
@@ -3086,7 +3013,7 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                 channelName = getCreatedSyncChannelName();
             }
 
-            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, sync));
+            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, osType, sync));
             int listenerId = topic.addListener(List.class, new MessageListener<List<Object>>() {
                 @Override
                 public void onMessage(CharSequence channel, List<Object> msg) {
@@ -3109,7 +3036,7 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
                 channelName = getUpdatedSyncChannelName();
             }
 
-            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, sync));
+            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, osType, sync));
             int listenerId = topic.addListener(List.class, new MessageListener<List<Object>>() {
                 @Override
                 public void onMessage(CharSequence channel, List<Object> msg) {
@@ -3129,7 +3056,7 @@ public class JCache<K, V> extends RedissonObject implements Cache<K, V>, CacheAs
         if (CacheEntryExpiredListener.class.isAssignableFrom(listener.getClass())) {
             String channelName = getExpiredChannelName();
 
-            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, false));
+            RTopic topic = redisson.getTopic(channelName, new JCacheEventCodec(codec, osType, false));
             int listenerId = topic.addListener(List.class, new MessageListener<List<Object>>() {
                 @Override
                 public void onMessage(CharSequence channel, List<Object> msg) {

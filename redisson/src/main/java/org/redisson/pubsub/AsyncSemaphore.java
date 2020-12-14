@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,9 @@
  */
 package org.redisson.pubsub;
 
-import java.util.Iterator;
-import java.util.LinkedHashSet;
-import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 
@@ -28,150 +26,81 @@ import java.util.concurrent.TimeUnit;
  */
 public class AsyncSemaphore {
 
-    private static class Entry {
-        
-        private Runnable runnable;
-        private int permits;
-        
-        Entry(Runnable runnable, int permits) {
-            super();
-            this.runnable = runnable;
-            this.permits = permits;
-        }
-        
-        public int getPermits() {
-            return permits;
-        }
-        
-        public Runnable getRunnable() {
-            return runnable;
-        }
-
-        @Override
-        @SuppressWarnings("AvoidInlineConditionals")
-        public int hashCode() {
-            final int prime = 31;
-            int result = 1;
-            result = prime * result + ((runnable == null) ? 0 : runnable.hashCode());
-            return result;
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            if (this == obj)
-                return true;
-            if (obj == null)
-                return false;
-            if (getClass() != obj.getClass())
-                return false;
-            Entry other = (Entry) obj;
-            if (runnable == null) {
-                if (other.runnable != null)
-                    return false;
-            } else if (!runnable.equals(other.runnable))
-                return false;
-            return true;
-        }
-        
-        
-    }
-    
-    private int counter;
-    private final Set<Entry> listeners = new LinkedHashSet<Entry>();
+    private final AtomicInteger counter;
+    private final Queue<Runnable> listeners = new ConcurrentLinkedQueue<>();
+    private final Set<Runnable> removedListeners = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     public AsyncSemaphore(int permits) {
-        counter = permits;
+        counter = new AtomicInteger(permits);
     }
     
     public boolean tryAcquire(long timeoutMillis) {
-        final CountDownLatch latch = new CountDownLatch(1);
-        final Runnable listener = new Runnable() {
-            @Override
-            public void run() {
-                latch.countDown();
-            }
-        };
-        acquire(listener);
+        CountDownLatch latch = new CountDownLatch(1);
+        Runnable runnable = () -> latch.countDown();
+        acquire(runnable);
         
         try {
-            boolean res = latch.await(timeoutMillis, TimeUnit.MILLISECONDS);
-            if (!res) {
-                if (!remove(listener)) {
-                    release();
-                }
+            boolean r = latch.await(timeoutMillis, TimeUnit.MILLISECONDS);
+            if (!r) {
+                remove(runnable);
             }
-            return res;
+            return r;
         } catch (InterruptedException e) {
+            remove(runnable);
             Thread.currentThread().interrupt();
-            if (!remove(listener)) {
-                release();
-            }
             return false;
         }
     }
 
     public int queueSize() {
-        synchronized (this) {
-            return listeners.size();
-        }
+        return listeners.size() - removedListeners.size();
     }
     
     public void removeListeners() {
-        synchronized (this) {
-            listeners.clear();
-        }
+        listeners.clear();
+        removedListeners.clear();
     }
     
     public void acquire(Runnable listener) {
-        acquire(listener, 1);
+        listeners.add(listener);
+        tryRun();
     }
-    
-    public void acquire(Runnable listener, int permits) {
-        boolean run = false;
-        
-        synchronized (this) {
-            if (counter < permits) {
-                listeners.add(new Entry(listener, permits));
+
+    private void tryRun() {
+        if (counter.get() == 0
+                || listeners.peek() == null) {
+            return;
+        }
+
+        if (counter.decrementAndGet() >= 0) {
+            Runnable listener = listeners.poll();
+            if (listener == null) {
+                counter.incrementAndGet();
                 return;
-            } else {
-                counter -= permits;
-                run = true;
             }
-        }
-        
-        if (run) {
-            listener.run();
-        }
-    }
-    
-    public boolean remove(Runnable listener) {
-        synchronized (this) {
-            return listeners.remove(new Entry(listener, 0));
+
+            if (removedListeners.remove(listener)) {
+                counter.incrementAndGet();
+                tryRun();
+            } else {
+                listener.run();
+            }
+        } else {
+            counter.incrementAndGet();
         }
     }
 
-    public int getCounter() {
-        return counter;
+    public void remove(Runnable listener) {
+        removedListeners.add(listener);
     }
-    
+
+    public int getCounter() {
+        return counter.get();
+    }
+
     public void release() {
-        Entry entryToAcquire = null;
-        
-        synchronized (this) {
-            counter++;
-            Iterator<Entry> iter = listeners.iterator();
-            if (iter.hasNext()) {
-                Entry entry = iter.next();
-                if (entry.getPermits() <= counter) {
-                    iter.remove();
-                    entryToAcquire = entry;
-                }
-            }
-        }
-        
-        if (entryToAcquire != null) {
-            acquire(entryToAcquire.getRunnable(), entryToAcquire.getPermits());
-        }
+        counter.incrementAndGet();
+        tryRun();
     }
 
     @Override

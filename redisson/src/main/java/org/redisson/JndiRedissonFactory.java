@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,11 +48,11 @@ public class JndiRedissonFactory implements ObjectFactory {
     protected RedissonClient buildClient(String configPath) throws NamingException {
         Config config = null;
         try {
-            config = Config.fromJSON(new File(configPath), getClass().getClassLoader());
+            config = Config.fromYAML(new File(configPath), getClass().getClassLoader());
         } catch (IOException e) {
             // trying next format
             try {
-                config = Config.fromYAML(new File(configPath), getClass().getClassLoader());
+                config = Config.fromJSON(new File(configPath), getClass().getClassLoader());
             } catch (IOException e1) {
                 NamingException ex = new NamingException("Can't parse yaml config " + configPath);
                 ex.initCause(e1);

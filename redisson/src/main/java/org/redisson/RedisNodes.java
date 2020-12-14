@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,16 @@
  */
 package org.redisson;
 
+import org.redisson.api.Node;
+import org.redisson.api.NodeType;
+import org.redisson.api.NodesGroup;
+import org.redisson.api.RFuture;
+import org.redisson.client.RedisConnection;
+import org.redisson.client.protocol.RedisCommands;
+import org.redisson.connection.*;
+import org.redisson.connection.ClientConnectionsEntry.FreezeReason;
+import org.redisson.misc.RedisURI;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -24,26 +34,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.redisson.api.Node;
-import org.redisson.api.NodeType;
-import org.redisson.api.NodesGroup;
-import org.redisson.api.RFuture;
-import org.redisson.client.RedisConnection;
-import org.redisson.client.protocol.RedisCommands;
-import org.redisson.connection.ClientConnectionsEntry;
-import org.redisson.connection.ClientConnectionsEntry.FreezeReason;
-import org.redisson.connection.ConnectionListener;
-import org.redisson.connection.ConnectionManager;
-import org.redisson.connection.MasterSlaveEntry;
-import org.redisson.connection.RedisClientEntry;
-import org.redisson.misc.RedisURI;
-
 /**
  * 
  * @author Nikita Koksharov
  *
  * @param <N> node type
  */
+@Deprecated
 public class RedisNodes<N extends Node> implements NodesGroup<N> {
 
     final ConnectionManager connectionManager;
@@ -152,10 +149,12 @@ public class RedisNodes<N extends Node> implements NodesGroup<N> {
         for (Entry<RedisConnection, RFuture<String>> entry : result.entrySet()) {
             RFuture<String> f = entry.getValue();
             f.awaitUninterruptibly();
-            if (!"PONG".equals(f.getNow())) {
-                res = false;
-            }
+            String pong = f.getNow();
             entry.getKey().closeAsync();
+            if (!"PONG".equals(pong)) {
+                res = false;
+                break;
+            }
         }
 
         // true and no futures were missed during client connection

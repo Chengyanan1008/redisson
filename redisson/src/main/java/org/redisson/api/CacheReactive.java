@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,8 @@ import javax.cache.integration.CacheWriter;
 import reactor.core.publisher.Mono;
 
 /**
- * 
+ * Reactive interface for JCache
+ *
  * @author Nikita Koksharov
  *
  * @param <K> key type

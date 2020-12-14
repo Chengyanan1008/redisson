@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,14 +42,24 @@ import org.redisson.api.map.event.MapEntryListener;
 public interface RMapCache<K, V> extends RMap<K, V>, RMapCacheAsync<K, V>, RDestroyable {
 
     /**
-     * Sets max size of the map.
+     * Sets max size of the map and overrides current value.
      * Superfluous elements are evicted using LRU algorithm.
      * 
      * @param maxSize - max size
      *                  If <code>0</code> the cache is unbounded (default).
      */
     void setMaxSize(int maxSize);
-    
+
+    /**
+     * Sets max size of the map and overrides current value.
+     * Superfluous elements are evicted using defined algorithm.
+     *
+     * @param maxSize - max size
+     * @param mode - eviction mode
+     * @return void
+     */
+    void setMaxSize(int maxSize, EvictionMode mode);
+
     /**
      * Tries to set max size of the map. 
      * Superfluous elements are evicted using LRU algorithm. 
@@ -59,7 +69,17 @@ public interface RMapCache<K, V> extends RMap<K, V>, RMapCacheAsync<K, V>, RDest
      *         If <code>0</code> the cache is unbounded (default).
      */
     boolean trySetMaxSize(int maxSize);
-    
+
+    /**
+     * Tries to set max size of the map.
+     * Superfluous elements are evicted using defined algorithm.
+     *
+     * @param maxSize - max size
+     * @param mode - eviction mode
+     * @return <code>true</code> if max size has been successfully set, otherwise <code>false</code>.
+     */
+    boolean trySetMaxSize(int maxSize, EvictionMode mode);
+
     /**
      * If the specified key is not already associated
      * with a value, associate it with the given value.

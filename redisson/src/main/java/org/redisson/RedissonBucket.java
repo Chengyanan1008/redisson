@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,21 @@
  */
 package org.redisson;
 
-import java.util.Collections;
-import java.util.concurrent.TimeUnit;
-
+import org.redisson.api.ObjectListener;
 import org.redisson.api.RBucket;
 import org.redisson.api.RFuture;
+import org.redisson.api.RPatternTopic;
+import org.redisson.api.listener.SetObjectListener;
 import org.redisson.client.codec.Codec;
+import org.redisson.client.codec.StringCodec;
 import org.redisson.client.protocol.RedisCommands;
 import org.redisson.command.CommandAsyncExecutor;
+import org.redisson.misc.CountableListener;
+import org.redisson.misc.RPromise;
+import org.redisson.misc.RedissonPromise;
+
+import java.util.Collections;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 
@@ -168,7 +175,7 @@ public class RedissonBucket<V> extends RedissonExpirable implements RBucket<V> {
         if (value == null) {
             throw new IllegalArgumentException("Value can't be null");
         }
-        return commandExecutor.writeAsync(getName(), codec, RedisCommands.SETPXNX, getName(), encode(value), "PX", timeUnit.toMillis(timeToLive), "NX");
+        return commandExecutor.writeAsync(getName(), codec, RedisCommands.SET_BOOLEAN, getName(), encode(value), "PX", timeUnit.toMillis(timeToLive), "NX");
     }
 
     @Override
@@ -179,6 +186,41 @@ public class RedissonBucket<V> extends RedissonExpirable implements RBucket<V> {
     @Override
     public boolean trySet(V value) {
         return get(trySetAsync(value));
+    }
+
+    @Override
+    public boolean setIfExists(V value) {
+        return get(setIfExistsAsync(value));
+    }
+
+    @Override
+    public RFuture<Boolean> setIfExistsAsync(V value) {
+        if (value == null) {
+            return commandExecutor.evalWriteAsync(getName(), codec, RedisCommands.EVAL_BOOLEAN,
+                  "local currValue = redis.call('get', KEYS[1]); " +
+                        "if currValue ~= false then " +
+                            "redis.call('del', KEYS[1]); " +
+                            "return 1;" +
+                        "end;" +
+                        "return 0; ",
+                    Collections.singletonList(getName()));
+        }
+
+        return commandExecutor.writeAsync(getName(), codec, RedisCommands.SET_BOOLEAN, getName(), encode(value), "XX");
+    }
+
+    @Override
+    public boolean setIfExists(V value, long timeToLive, TimeUnit timeUnit) {
+        return get(setIfExistsAsync(value, timeToLive, timeUnit));
+    }
+
+    @Override
+    public RFuture<Boolean> setIfExistsAsync(V value, long timeToLive, TimeUnit timeUnit) {
+        if (value == null) {
+            throw new IllegalArgumentException("Value can't be null");
+        }
+
+        return commandExecutor.writeAsync(getName(), codec, RedisCommands.SET_BOOLEAN, getName(), encode(value), "PX", timeUnit.toMillis(timeToLive), "XX");
     }
 
     @Override
@@ -194,6 +236,41 @@ public class RedissonBucket<V> extends RedissonExpirable implements RBucket<V> {
     @Override
     public V getAndSet(V value, long timeToLive, TimeUnit timeUnit) {
         return get(getAndSetAsync(value, timeToLive, timeUnit));
+    }
+
+    @Override
+    public int addListener(ObjectListener listener) {
+        if (listener instanceof SetObjectListener) {
+            return addListener("__keyevent@*:set", (SetObjectListener) listener, SetObjectListener::onSet);
+        }
+        return super.addListener(listener);
+    };
+
+    @Override
+    public RFuture<Integer> addListenerAsync(ObjectListener listener) {
+        if (listener instanceof SetObjectListener) {
+            return addListenerAsync("__keyevent@*:set", (SetObjectListener) listener, SetObjectListener::onSet);
+        }
+        return super.addListenerAsync(listener);
+    }
+
+    @Override
+    public void removeListener(int listenerId) {
+        RPatternTopic expiredTopic = new RedissonPatternTopic(StringCodec.INSTANCE, commandExecutor, "__keyevent@*:set");
+        expiredTopic.removeListener(listenerId);
+
+        super.removeListener(listenerId);
+    }
+
+    @Override
+    public RFuture<Void> removeListenerAsync(int listenerId) {
+        RPromise<Void> result = new RedissonPromise<>();
+        CountableListener<Void> listener = new CountableListener<>(result, null, 3);
+
+        RPatternTopic setTopic = new RedissonPatternTopic(StringCodec.INSTANCE, commandExecutor, "__keyevent@*:set");
+        setTopic.removeListenerAsync(listenerId).onComplete(listener);
+        removeListenersAsync(listenerId, listener);
+        return result;
     }
 
 }

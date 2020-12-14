@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,9 @@
  */
 package org.redisson.api;
 
-import java.util.List;
-
 import reactor.core.publisher.Mono;
+
+import java.util.List;
 
 /**
  * Reactive interface for Queue object
@@ -41,6 +41,14 @@ public interface RQueueReactive<V> extends RCollectionReactive<V> {
      * @return the head of this queue, or {@code null}
      */
     Mono<V> poll();
+
+    /**
+     * Retrieves and removes the head elements of this queue.
+     * Elements amount limited by <code>limit</code> param.
+     *
+     * @return list of head elements
+     */
+    Mono<List<V>> poll(int limit);
 
     /**
      * Inserts the specified element into this queue.

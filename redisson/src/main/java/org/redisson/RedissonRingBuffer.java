@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,7 +62,21 @@ public class RedissonRingBuffer<V> extends RedissonQueue<V> implements RRingBuff
     public boolean trySetCapacity(int capacity) {
         return get(trySetCapacityAsync(capacity));
     }
-    
+
+    @Override
+    public RFuture<Void> setCapacityAsync(int capacity) {
+        return commandExecutor.evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_VOID,
+                "redis.call('set', KEYS[2], ARGV[1]); " +
+                      "local len = redis.call('llen', KEYS[1]); " +
+                      "redis.call('ltrim', KEYS[1], len - tonumber(ARGV[1]), len - 1); ",
+             Arrays.asList(getName(), settingsName), capacity);
+    }
+
+    @Override
+    public void setCapacity(int capacity) {
+        get(setCapacityAsync(capacity));
+    }
+
     @Override
     public RFuture<Boolean> addAsync(V e) {
         return commandExecutor.evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,

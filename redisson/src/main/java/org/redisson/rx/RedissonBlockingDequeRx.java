@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package org.redisson.rx;
 
 import org.redisson.RedissonBlockingDeque;
 
-import io.reactivex.Flowable;
+import io.reactivex.rxjava3.core.Flowable;
 
 /**
  * 
@@ -35,15 +35,11 @@ public class RedissonBlockingDequeRx<V> extends RedissonBlockingQueueRx<V> {
     }
 
     public Flowable<V> takeFirstElements() {
-        return ElementsStream.takeElements(() -> {
-            return queue.takeFirstAsync();
-        });
+        return ElementsStream.takeElements(queue::takeFirstAsync);
     }
     
     public Flowable<V> takeLastElements() {
-        return ElementsStream.takeElements(() -> {
-            return queue.takeLastAsync();
-        });
+        return ElementsStream.takeElements(queue::takeLastAsync);
     }
     
 }

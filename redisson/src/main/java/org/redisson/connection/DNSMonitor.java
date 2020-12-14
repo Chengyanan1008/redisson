@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -98,6 +98,8 @@ public class DNSMonitor {
 
     private void monitorMasters(AtomicInteger counter) {
         for (Entry<RedisURI, InetSocketAddress> entry : masters.entrySet()) {
+            log.debug("Request sent to resolve ip address for master host: {}", entry.getKey().getHost());
+
             Future<InetSocketAddress> resolveFuture = resolver.resolve(InetSocketAddress.createUnresolved(entry.getKey().getHost(), entry.getKey().getPort()));
             resolveFuture.addListener(new FutureListener<InetSocketAddress>() {
                 @Override
@@ -110,23 +112,28 @@ public class DNSMonitor {
                         log.error("Unable to resolve " + entry.getKey().getHost(), future.cause());
                         return;
                     }
-                    
+
+                    log.debug("Resolved ip: {} for master host: {}", future.getNow().getAddress(), entry.getKey().getHost());
+
                     InetSocketAddress currentMasterAddr = entry.getValue();
                     InetSocketAddress newMasterAddr = future.getNow();
                     if (!newMasterAddr.getAddress().equals(currentMasterAddr.getAddress())) {
                         log.info("Detected DNS change. Master {} has changed ip from {} to {}", 
-                                entry.getKey(), currentMasterAddr.getAddress().getHostAddress(), newMasterAddr.getAddress().getHostAddress());
+                                entry.getKey(), currentMasterAddr.getAddress().getHostAddress(),
+                                newMasterAddr.getAddress().getHostAddress());
+
                         MasterSlaveEntry masterSlaveEntry = connectionManager.getEntry(currentMasterAddr);
                         if (masterSlaveEntry == null) {
-                            if (connectionManager instanceof SingleConnectionManager) {
-                                log.error("Unable to find master entry for {}. Multiple IP bindings for single hostname supported only in Redisson PRO!", currentMasterAddr);
-                            } else {
-                                log.error("Unable to find master entry for {}", currentMasterAddr);
-                            }
+                            log.error("Unable to find entry for current master {}", currentMasterAddr);
                             return;
                         }
-                        masterSlaveEntry.changeMaster(newMasterAddr, entry.getKey());
-                        masters.put(entry.getKey(), newMasterAddr);
+
+                        RFuture<RedisClient> changeFuture = masterSlaveEntry.changeMaster(newMasterAddr, entry.getKey());
+                        changeFuture.onComplete((r, e) -> {
+                            if (e == null) {
+                                masters.put(entry.getKey(), newMasterAddr);
+                            }
+                        });
                     }
                 }
             });
@@ -135,6 +142,8 @@ public class DNSMonitor {
 
     private void monitorSlaves(AtomicInteger counter) {
         for (Entry<RedisURI, InetSocketAddress> entry : slaves.entrySet()) {
+            log.debug("Request sent to resolve ip address for slave host: {}", entry.getKey().getHost());
+
             Future<InetSocketAddress> resolveFuture = resolver.resolve(InetSocketAddress.createUnresolved(entry.getKey().getHost(), entry.getKey().getPort()));
             resolveFuture.addListener(new FutureListener<InetSocketAddress>() {
                 @Override
@@ -147,7 +156,9 @@ public class DNSMonitor {
                         log.error("Unable to resolve " + entry.getKey().getHost(), future.cause());
                         return;
                     }
-                    
+
+                    log.debug("Resolved ip: {} for slave host: {}", future.getNow().getAddress(), entry.getKey().getHost());
+
                     InetSocketAddress currentSlaveAddr = entry.getValue();
                     InetSocketAddress newSlaveAddr = future.getNow();
                     if (!newSlaveAddr.getAddress().equals(currentSlaveAddr.getAddress())) {

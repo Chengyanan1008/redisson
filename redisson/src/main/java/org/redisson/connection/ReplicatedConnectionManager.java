@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package org.redisson.connection;
 
+import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -168,7 +169,7 @@ public class ReplicatedConnectionManager extends MasterSlaveConnectionManager {
                                     });
                                 }
                             } else if (!config.checkSkipSlavesInit()) {
-                                slaveUp(addr);
+                                slaveUp(addr, connection.getRedisClient().getAddr());
                             }
                             
                             if (count.decrementAndGet() == 0) {
@@ -182,10 +183,10 @@ public class ReplicatedConnectionManager extends MasterSlaveConnectionManager {
         }, cfg.getScanInterval(), TimeUnit.MILLISECONDS);
     }
 
-    private void slaveUp(RedisURI uri) {
+    private void slaveUp(RedisURI uri, InetSocketAddress address) {
         MasterSlaveEntry entry = getEntry(singleSlotRange.getStartSlot());
-        if (entry.slaveUp(uri, FreezeReason.MANAGER)) {
-            log.info("slave: {} has up", uri);
+        if (entry.slaveUp(address, FreezeReason.MANAGER)) {
+            log.info("slave: {} is up", uri);
         }
     }
     

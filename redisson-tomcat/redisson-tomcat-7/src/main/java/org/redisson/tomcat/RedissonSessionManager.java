@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,21 +15,7 @@
  */
 package org.redisson.tomcat;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-
-import javax.servlet.http.HttpSession;
-
-import org.apache.catalina.Context;
-import org.apache.catalina.LifecycleException;
-import org.apache.catalina.LifecycleState;
-import org.apache.catalina.Pipeline;
-import org.apache.catalina.Session;
-import org.apache.catalina.SessionEvent;
-import org.apache.catalina.SessionListener;
+import org.apache.catalina.*;
 import org.apache.catalina.session.ManagerBase;
 import org.apache.juli.logging.Log;
 import org.apache.juli.logging.LogFactory;
@@ -43,6 +29,11 @@ import org.redisson.client.codec.Codec;
 import org.redisson.client.codec.StringCodec;
 import org.redisson.codec.CompositeCodec;
 import org.redisson.config.Config;
+
+import javax.servlet.http.HttpSession;
+import java.io.File;
+import java.io.IOException;
+import java.util.*;
 
 /**
  * Redisson Session Manager for Apache Tomcat
@@ -68,8 +59,8 @@ public class RedissonSessionManager extends ManagerBase {
 
     private final String nodeId = UUID.randomUUID().toString();
 
-    private UpdateValve updateValve;
-
+    private MessageListener messageListener;
+    
     private Codec codecToUse;
 
     public String getNodeId() { return nodeId; }
@@ -136,7 +127,7 @@ public class RedissonSessionManager extends ManagerBase {
             session.addSessionListener(new SessionListener() {
                 @Override
                 public void sessionEvent(SessionEvent event) {
-                    if (event.getType() == Session.SESSION_DESTROYED_EVENT) {
+                    if (event.getType().equals(Session.SESSION_DESTROYED_EVENT)) {
                         getTopic().publish(new SessionDestroyedMessage(getNodeId(), session.getId()));
                     }
                 }
@@ -144,7 +135,7 @@ public class RedissonSessionManager extends ManagerBase {
         }
         return session;
     }
-    
+
     public RSet<String> getNotifiedNodes(String sessionId) {
         String separator = keyPrefix == null || keyPrefix.isEmpty() ? "" : ":";
         String name = keyPrefix + separator + "redisson:tomcat_notified_nodes:" + sessionId;
@@ -179,7 +170,7 @@ public class RedissonSessionManager extends ManagerBase {
                     log.error("Can't read session object by id: " + id, e);
                 }
 
-                if (attrs.isEmpty() || (broadcastSessionEvents && getNotifiedNodes(id).contains(nodeId))) {  
+                if (attrs.isEmpty() || (broadcastSessionEvents && getNotifiedNodes(id).contains(nodeId))) {
                     log.info("Session " + id + " can't be found");
                     return null;    
                 }
@@ -200,17 +191,10 @@ public class RedissonSessionManager extends ManagerBase {
         
         return result;
     }
-
     
     @Override
     public Session createEmptySession() {
         return new RedissonSession(this, readMode, updateMode, broadcastSessionEvents);
-    }
-    
-    @Override
-    public void add(Session session) {
-        super.add(session);
-        ((RedissonSession)session).save();
     }
     
     @Override
@@ -220,6 +204,12 @@ public class RedissonSessionManager extends ManagerBase {
         if (session.getIdInternal() != null) {
             ((RedissonSession)session).delete();
         }
+    }
+    
+    @Override
+    public void add(Session session) {
+        super.add(session);
+        ((RedissonSession)session).save();
     }
     
     public RedissonClient getRedisson() {
@@ -249,18 +239,29 @@ public class RedissonSessionManager extends ManagerBase {
             throw new LifecycleException(e);
         }
         
-        if (updateMode == UpdateMode.AFTER_REQUEST) {
-            Pipeline pipeline = getEngine().getPipeline();
-            if (updateValve != null) { // in case startInternal is called without stopInternal cleaning the updateValve
-                pipeline.removeValve(updateValve);
+        Pipeline pipeline = getContainer().getPipeline();
+        synchronized (pipeline) {
+            if (readMode == ReadMode.REDIS) {
+                Optional<Valve> res = Arrays.stream(pipeline.getValves()).filter(v -> v.getClass() == UsageValve.class).findAny();
+                if (res.isPresent()) {
+                    ((UsageValve)res.get()).incUsage();
+                } else {
+                    pipeline.addValve(new UsageValve());
+                }
             }
-            updateValve = new UpdateValve(this);
-            pipeline.addValve(updateValve);			
+            if (updateMode == UpdateMode.AFTER_REQUEST) {
+                Optional<Valve> res = Arrays.stream(pipeline.getValves()).filter(v -> v.getClass() == UpdateValve.class).findAny();
+                if (res.isPresent()) {
+                    ((UpdateValve)res.get()).incUsage();
+                } else {
+                    pipeline.addValve(new UpdateValve());
+                }
+            }
         }
         
         if (readMode == ReadMode.MEMORY || broadcastSessionEvents) {
             RTopic updatesTopic = getTopic();
-            updatesTopic.addListener(AttributeMessage.class, new MessageListener<AttributeMessage>() {
+            messageListener = new MessageListener<AttributeMessage>() {
                 
                 @Override
                 public void onMessage(CharSequence channel, AttributeMessage msg) {
@@ -319,7 +320,9 @@ public class RedissonSessionManager extends ManagerBase {
                         log.error("Unable to handle topic message", e);
                     }
                 }
-            });
+            };
+            
+            updatesTopic.addListener(AttributeMessage.class, messageListener);
         }
         
         setState(LifecycleState.STARTING);
@@ -328,11 +331,11 @@ public class RedissonSessionManager extends ManagerBase {
     protected RedissonClient buildClient() throws LifecycleException {
         Config config = null;
         try {
-            config = Config.fromJSON(new File(configPath), getClass().getClassLoader());
+            config = Config.fromYAML(new File(configPath), getClass().getClassLoader());
         } catch (IOException e) {
             // trying next format
             try {
-                config = Config.fromYAML(new File(configPath), getClass().getClassLoader());
+                config = Config.fromJSON(new File(configPath), getClass().getClassLoader());
             } catch (IOException e1) {
                 log.error("Can't parse json config " + configPath, e);
                 throw new LifecycleException("Can't parse yaml config " + configPath, e1);
@@ -352,9 +355,27 @@ public class RedissonSessionManager extends ManagerBase {
         
         setState(LifecycleState.STOPPING);
         
-        if (updateValve != null) {
-            getEngine().getPipeline().removeValve(updateValve);
-            updateValve = null;
+        Pipeline pipeline = getContainer().getPipeline();
+        synchronized (pipeline) {
+            if (readMode == ReadMode.REDIS) {
+                Arrays.stream(pipeline.getValves()).filter(v -> v.getClass() == UsageValve.class).forEach(v -> {
+                    if (((UsageValve)v).decUsage() == 0){
+                        pipeline.removeValve(v);
+                    }
+                });
+            }
+            if (updateMode == UpdateMode.AFTER_REQUEST) {
+                Arrays.stream(pipeline.getValves()).filter(v -> v.getClass() == UpdateValve.class).forEach(v -> {
+                    if (((UpdateValve)v).decUsage() == 0){
+                        pipeline.removeValve(v);
+                    }
+                });
+            }
+        }
+        
+        if (messageListener != null) {
+             RTopic updatesTopic = getTopic();
+             updatesTopic.removeListener(messageListener);
         }
 
         codecToUse = null;

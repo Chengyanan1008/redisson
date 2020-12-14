@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,9 +28,16 @@ import org.redisson.client.codec.Codec;
 public interface RObject extends RObjectAsync {
 
     /**
-     * Returns size of object in Redis memory
+     * Returns number of seconds spent since last write or read operation over this object.
+     *
+     * @return number of seconds
+     */
+    Long getIdleTime();
+
+    /**
+     * Returns bytes amount used by object in Redis memory. 
      * 
-     * @return size of object
+     * @return size in bytes
      */
     long sizeInMemory();
     

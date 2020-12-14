@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,21 +15,7 @@
  */
 package org.redisson.spring.session;
 
-import java.time.Duration;
-import java.time.Instant;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-
-import org.redisson.api.RBucket;
-import org.redisson.api.RMap;
-import org.redisson.api.RPatternTopic;
-import org.redisson.api.RSet;
-import org.redisson.api.RTopic;
-import org.redisson.api.RedissonClient;
+import org.redisson.api.*;
 import org.redisson.api.listener.PatternMessageListener;
 import org.redisson.client.codec.StringCodec;
 import org.redisson.codec.CompositeCodec;
@@ -47,11 +33,19 @@ import org.springframework.session.events.SessionDeletedEvent;
 import org.springframework.session.events.SessionExpiredEvent;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.TimeUnit;
+
 /**
- * 
+ * Deprecated. Use spring-session implementation based on Redisson Redis Data module
+ *
  * @author Nikita Koksharov
  *
  */
+@Deprecated
 public class RedissonSessionRepository implements FindByIndexNameSessionRepository<RedissonSessionRepository.RedissonSession>, 
                                                     PatternMessageListener<String> {
 
@@ -198,24 +192,38 @@ public class RedissonSessionRepository implements FindByIndexNameSessionReposito
         public String changeSessionId() {
             String oldId = delegate.getId();
             String id = delegate.changeSessionId();
-            if (redisson.getConfig().isClusterConfig()) {
-                Map<String, Object> oldState = map.readAllMap();
-                map.delete();
-                
-                map = redisson.getMap(keyPrefix + id, map.getCodec());
-                map.putAll(oldState);
-                
-                RBucket<String> bucket = redisson.getBucket(getExpiredKey(oldId));
-                long remainTTL = bucket.remainTimeToLive();
-                bucket.delete();
-                redisson.getBucket(getExpiredKey(id)).set("", remainTTL, TimeUnit.MILLISECONDS);
-            } else {
-                map.rename(keyPrefix + id);
-                redisson.getBucket(getExpiredKey(oldId)).rename(getExpiredKey(id));
+
+            RBatch batch = redisson.createBatch(BatchOptions.defaults());
+            batch.getBucket(getExpiredKey(oldId)).remainTimeToLiveAsync();
+            batch.getBucket(getExpiredKey(oldId)).deleteAsync();
+            batch.getMap(map.getName(), map.getCodec()).readAllMapAsync();
+            batch.getMap(map.getName()).deleteAsync();
+
+            BatchResult<?> res = batch.execute();
+            List<?> list = res.getResponses();
+
+            Long remainTTL = (Long) list.get(0);
+            Map<String, Object> oldState = (Map<String, Object>) list.get(2);
+
+            if (remainTTL == -2) {
+                // Either:
+                // - a parallel request also invoked changeSessionId() on this session, and the
+                //   expiredKey for oldId had been deleted
+                // - sessions do not expire
+                remainTTL = delegate.getMaxInactiveInterval().toMillis();
             }
+
+            RBatch batchNew = redisson.createBatch();
+            batchNew.getMap(keyPrefix + id, map.getCodec()).putAllAsync(oldState);
+            if (remainTTL > 0) {
+                batchNew.getBucket(getExpiredKey(id)).setAsync("", remainTTL, TimeUnit.MILLISECONDS);
+            }
+            batchNew.execute();
+
+            map = redisson.getMap(keyPrefix + id, map.getCodec());
+
             return id;
         }
-
     }
 
     private static final Logger log = LoggerFactory.getLogger(RedissonSessionRepository.class);
@@ -241,10 +249,12 @@ public class RedissonSessionRepository implements FindByIndexNameSessionReposito
         }
 
         deletedTopic = this.redisson.getPatternTopic("__keyevent@*:del", StringCodec.INSTANCE);
-        deletedTopic.addListener(String.class, this);
         expiredTopic = this.redisson.getPatternTopic("__keyevent@*:expired", StringCodec.INSTANCE);
-        expiredTopic.addListener(String.class, this);
         createdTopic = this.redisson.getPatternTopic(getEventsChannelPrefix() + "*", StringCodec.INSTANCE);
+
+        // add listeners after all topics are created to avoid race and potential NPE if we get messages right away
+        deletedTopic.addListener(String.class, this);
+        expiredTopic.addListener(String.class, this);
         createdTopic.addListener(String.class, this);
     }
 

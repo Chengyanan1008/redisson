@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,22 +15,14 @@
  */
 package org.redisson;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Condition;
-
+import io.netty.util.Timeout;
+import io.netty.util.TimerTask;
+import org.redisson.api.BatchOptions;
+import org.redisson.api.BatchResult;
 import org.redisson.api.RFuture;
 import org.redisson.api.RLock;
 import org.redisson.client.RedisException;
+import org.redisson.client.codec.Codec;
 import org.redisson.client.codec.LongCodec;
 import org.redisson.client.protocol.RedisCommand;
 import org.redisson.client.protocol.RedisCommand.ValueType;
@@ -38,14 +30,22 @@ import org.redisson.client.protocol.RedisCommands;
 import org.redisson.client.protocol.RedisStrictCommand;
 import org.redisson.client.protocol.convertor.IntegerReplayConvertor;
 import org.redisson.command.CommandAsyncExecutor;
+import org.redisson.command.CommandBatchService;
+import org.redisson.connection.MasterSlaveEntry;
 import org.redisson.misc.RPromise;
 import org.redisson.misc.RedissonPromise;
 import org.redisson.pubsub.LockPubSub;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.netty.util.Timeout;
-import io.netty.util.TimerTask;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Condition;
 
 /**
  * Distributed implementation of {@link java.util.concurrent.locks.Lock}
@@ -68,7 +68,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
             super();
         }
         
-        public void addThreadId(long threadId) {
+        public synchronized void addThreadId(long threadId) {
             Integer counter = threadIds.get(threadId);
             if (counter == null) {
                 counter = 1;
@@ -77,16 +77,16 @@ public class RedissonLock extends RedissonExpirable implements RLock {
             }
             threadIds.put(threadId, counter);
         }
-        public boolean hasNoThreads() {
+        public synchronized boolean hasNoThreads() {
             return threadIds.isEmpty();
         }
-        public Long getFirstThreadId() {
+        public synchronized Long getFirstThreadId() {
             if (threadIds.isEmpty()) {
                 return null;
             }
             return threadIds.keySet().iterator().next();
         }
-        public void removeThreadId(long threadId) {
+        public synchronized void removeThreadId(long threadId) {
             Integer counter = threadIds.get(threadId);
             if (counter == null) {
                 return;
@@ -114,7 +114,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     private static final ConcurrentMap<String, ExpirationEntry> EXPIRATION_RENEWAL_MAP = new ConcurrentHashMap<>();
     protected long internalLockLeaseTime;
 
-    final UUID id;
+    final String id;
     final String entryName;
 
     protected final LockPubSub pubSub;
@@ -173,18 +173,22 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
     private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
         long threadId = Thread.currentThread().getId();
-        Long ttl = tryAcquire(leaseTime, unit, threadId);
+        Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
             return;
         }
 
         RFuture<RedissonLockEntry> future = subscribe(threadId);
-        commandExecutor.syncSubscription(future);
+        if (interruptibly) {
+            commandExecutor.syncSubscriptionInterrupted(future);
+        } else {
+            commandExecutor.syncSubscription(future);
+        }
 
         try {
             while (true) {
-                ttl = tryAcquire(leaseTime, unit, threadId);
+                ttl = tryAcquire(-1, leaseTime, unit, threadId);
                 // lock acquired
                 if (ttl == null) {
                     break;
@@ -193,18 +197,18 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                 // waiting for message
                 if (ttl >= 0) {
                     try {
-                        getEntry(threadId).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
+                        future.getNow().getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
                     } catch (InterruptedException e) {
                         if (interruptibly) {
                             throw e;
                         }
-                        getEntry(threadId).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
+                        future.getNow().getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
                     }
                 } else {
                     if (interruptibly) {
-                        getEntry(threadId).getLatch().acquire();
+                        future.getNow().getLatch().acquire();
                     } else {
-                        getEntry(threadId).getLatch().acquireUninterruptibly();
+                        future.getNow().getLatch().acquireUninterruptibly();
                     }
                 }
             }
@@ -214,15 +218,16 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 //        get(lockAsync(leaseTime, unit));
     }
     
-    private Long tryAcquire(long leaseTime, TimeUnit unit, long threadId) {
-        return get(tryAcquireAsync(leaseTime, unit, threadId));
+    private Long tryAcquire(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
+        return get(tryAcquireAsync(waitTime, leaseTime, unit, threadId));
     }
     
-    private RFuture<Boolean> tryAcquireOnceAsync(long leaseTime, TimeUnit unit, long threadId) {
+    private RFuture<Boolean> tryAcquireOnceAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
         if (leaseTime != -1) {
-            return tryLockInnerAsync(leaseTime, unit, threadId, RedisCommands.EVAL_NULL_BOOLEAN);
+            return tryLockInnerAsync(waitTime, leaseTime, unit, threadId, RedisCommands.EVAL_NULL_BOOLEAN);
         }
-        RFuture<Boolean> ttlRemainingFuture = tryLockInnerAsync(commandExecutor.getConnectionManager().getCfg().getLockWatchdogTimeout(), TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_NULL_BOOLEAN);
+        RFuture<Boolean> ttlRemainingFuture = tryLockInnerAsync(waitTime, internalLockLeaseTime,
+                                                                    TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_NULL_BOOLEAN);
         ttlRemainingFuture.onComplete((ttlRemaining, e) -> {
             if (e != null) {
                 return;
@@ -236,11 +241,12 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         return ttlRemainingFuture;
     }
 
-    private <T> RFuture<Long> tryAcquireAsync(long leaseTime, TimeUnit unit, long threadId) {
+    private <T> RFuture<Long> tryAcquireAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
         if (leaseTime != -1) {
-            return tryLockInnerAsync(leaseTime, unit, threadId, RedisCommands.EVAL_LONG);
+            return tryLockInnerAsync(waitTime, leaseTime, unit, threadId, RedisCommands.EVAL_LONG);
         }
-        RFuture<Long> ttlRemainingFuture = tryLockInnerAsync(commandExecutor.getConnectionManager().getCfg().getLockWatchdogTimeout(), TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
+        RFuture<Long> ttlRemainingFuture = tryLockInnerAsync(waitTime, internalLockLeaseTime,
+                                                                TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
         ttlRemainingFuture.onComplete((ttlRemaining, e) -> {
             if (e != null) {
                 return;
@@ -281,6 +287,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                 future.onComplete((res, e) -> {
                     if (e != null) {
                         log.error("Can't update lock " + getName() + " expiration", e);
+                        EXPIRATION_RENEWAL_MAP.remove(getEntryName());
                         return;
                     }
                     
@@ -307,14 +314,14 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     }
 
     protected RFuture<Boolean> renewExpirationAsync(long threadId) {
-        return commandExecutor.evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+        return evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
                 "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
-                    "redis.call('pexpire', KEYS[1], ARGV[1]); " +
-                    "return 1; " +
-                "end; " +
-                "return 0;",
-            Collections.<Object>singletonList(getName()), 
-            internalLockLeaseTime, getLockName(threadId));
+                        "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                        "return 1; " +
+                        "end; " +
+                        "return 0;",
+                Collections.singletonList(getName()),
+                internalLockLeaseTime, getLockName(threadId));
     }
 
     void cancelExpirationRenewal(Long threadId) {
@@ -326,36 +333,71 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         if (threadId != null) {
             task.removeThreadId(threadId);
         }
-        
+
         if (threadId == null || task.hasNoThreads()) {
-            task.getTimeout().cancel();
+            Timeout timeout = task.getTimeout();
+            if (timeout != null) {
+                timeout.cancel();
+            }
             EXPIRATION_RENEWAL_MAP.remove(getEntryName());
         }
     }
 
-    <T> RFuture<T> tryLockInnerAsync(long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
+    protected <T> RFuture<T> evalWriteAsync(String key, Codec codec, RedisCommand<T> evalCommandType, String script, List<Object> keys, Object... params) {
+        CommandBatchService executorService = createCommandBatchService();
+        RFuture<T> result = executorService.evalWriteAsync(key, codec, evalCommandType, script, keys, params);
+        if (commandExecutor instanceof CommandBatchService) {
+            return result;
+        }
+
+        RPromise<T> r = new RedissonPromise<>();
+        RFuture<BatchResult<?>> future = executorService.executeAsync();
+        future.onComplete((res, ex) -> {
+            if (ex != null) {
+                r.tryFailure(ex);
+                return;
+            }
+
+            r.trySuccess(result.getNow());
+        });
+        return r;
+    }
+
+    <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         internalLockLeaseTime = unit.toMillis(leaseTime);
 
-        return commandExecutor.evalWriteAsync(getName(), LongCodec.INSTANCE, command,
-                  "if (redis.call('exists', KEYS[1]) == 0) then " +
-                      "redis.call('hset', KEYS[1], ARGV[2], 1); " +
-                      "redis.call('pexpire', KEYS[1], ARGV[1]); " +
-                      "return nil; " +
-                  "end; " +
-                  "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
-                      "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
-                      "redis.call('pexpire', KEYS[1], ARGV[1]); " +
-                      "return nil; " +
-                  "end; " +
-                  "return redis.call('pttl', KEYS[1]);",
-                    Collections.<Object>singletonList(getName()), internalLockLeaseTime, getLockName(threadId));
+        return evalWriteAsync(getName(), LongCodec.INSTANCE, command,
+                "if (redis.call('exists', KEYS[1]) == 0) then " +
+                        "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                        "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                        "return nil; " +
+                        "end; " +
+                        "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
+                        "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                        "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                        "return nil; " +
+                        "end; " +
+                        "return redis.call('pttl', KEYS[1]);",
+                Collections.singletonList(getName()), internalLockLeaseTime, getLockName(threadId));
+    }
+
+    private CommandBatchService createCommandBatchService() {
+        if (commandExecutor instanceof CommandBatchService) {
+            return (CommandBatchService) commandExecutor;
+        }
+
+        MasterSlaveEntry entry = commandExecutor.getConnectionManager().getEntry(getName());
+        BatchOptions options = BatchOptions.defaults()
+                                .syncSlaves(entry.getAvailableSlaves(), 1, TimeUnit.SECONDS);
+
+        return new CommandBatchService(commandExecutor.getConnectionManager(), options);
+    }
+
+    private void acquireFailed(long waitTime, TimeUnit unit, long threadId) {
+        get(acquireFailedAsync(waitTime, unit, threadId));
     }
     
-    private void acquireFailed(long threadId) {
-        get(acquireFailedAsync(threadId));
-    }
-    
-    protected RFuture<Void> acquireFailedAsync(long threadId) {
+    protected RFuture<Void> acquireFailedAsync(long waitTime, TimeUnit unit, long threadId) {
         return RedissonPromise.newSucceededFuture(null);
     }
 
@@ -364,7 +406,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         long time = unit.toMillis(waitTime);
         long current = System.currentTimeMillis();
         long threadId = Thread.currentThread().getId();
-        Long ttl = tryAcquire(leaseTime, unit, threadId);
+        Long ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
             return true;
@@ -372,13 +414,13 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         
         time -= System.currentTimeMillis() - current;
         if (time <= 0) {
-            acquireFailed(threadId);
+            acquireFailed(waitTime, unit, threadId);
             return false;
         }
         
         current = System.currentTimeMillis();
         RFuture<RedissonLockEntry> subscribeFuture = subscribe(threadId);
-        if (!await(subscribeFuture, time, TimeUnit.MILLISECONDS)) {
+        if (!subscribeFuture.await(time, TimeUnit.MILLISECONDS)) {
             if (!subscribeFuture.cancel(false)) {
                 subscribeFuture.onComplete((res, e) -> {
                     if (e == null) {
@@ -386,20 +428,20 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                     }
                 });
             }
-            acquireFailed(threadId);
+            acquireFailed(waitTime, unit, threadId);
             return false;
         }
 
         try {
             time -= System.currentTimeMillis() - current;
             if (time <= 0) {
-                acquireFailed(threadId);
+                acquireFailed(waitTime, unit, threadId);
                 return false;
             }
         
             while (true) {
                 long currentTime = System.currentTimeMillis();
-                ttl = tryAcquire(leaseTime, unit, threadId);
+                ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
                 // lock acquired
                 if (ttl == null) {
                     return true;
@@ -407,21 +449,21 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
                 time -= System.currentTimeMillis() - currentTime;
                 if (time <= 0) {
-                    acquireFailed(threadId);
+                    acquireFailed(waitTime, unit, threadId);
                     return false;
                 }
 
                 // waiting for message
                 currentTime = System.currentTimeMillis();
                 if (ttl >= 0 && ttl < time) {
-                    getEntry(threadId).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
+                    subscribeFuture.getNow().getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
                 } else {
-                    getEntry(threadId).getLatch().tryAcquire(time, TimeUnit.MILLISECONDS);
+                    subscribeFuture.getNow().getLatch().tryAcquire(time, TimeUnit.MILLISECONDS);
                 }
 
                 time -= System.currentTimeMillis() - currentTime;
                 if (time <= 0) {
-                    acquireFailed(threadId);
+                    acquireFailed(waitTime, unit, threadId);
                     return false;
                 }
             }
@@ -429,10 +471,6 @@ public class RedissonLock extends RedissonExpirable implements RLock {
             unsubscribe(subscribeFuture, threadId);
         }
 //        return get(tryLockAsync(waitTime, leaseTime, unit));
-    }
-
-    protected RedissonLockEntry getEntry(long threadId) {
-        return pubSub.getEntry(getEntryName());
     }
 
     protected RFuture<RedissonLockEntry> subscribe(long threadId) {
@@ -485,14 +523,14 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     @Override
     public RFuture<Boolean> forceUnlockAsync() {
         cancelExpirationRenewal(null);
-        return commandExecutor.evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+        return evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
                 "if (redis.call('del', KEYS[1]) == 1) then "
-                + "redis.call('publish', KEYS[2], ARGV[1]); "
-                + "return 1 "
-                + "else "
-                + "return 0 "
-                + "end",
-                Arrays.<Object>asList(getName(), getChannelName()), LockPubSub.UNLOCK_MESSAGE);
+                        + "redis.call('publish', KEYS[2], ARGV[1]); "
+                        + "return 1 "
+                        + "else "
+                        + "return 0 "
+                        + "end",
+                Arrays.asList(getName(), getChannelName()), LockPubSub.UNLOCK_MESSAGE);
     }
 
     @Override
@@ -544,22 +582,21 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     }
 
     protected RFuture<Boolean> unlockInnerAsync(long threadId) {
-        return commandExecutor.evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+        return evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
                 "if (redis.call('hexists', KEYS[1], ARGV[3]) == 0) then " +
-                    "return nil;" +
-                "end; " +
-                "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
-                "if (counter > 0) then " +
-                    "redis.call('pexpire', KEYS[1], ARGV[2]); " +
-                    "return 0; " +
-                "else " +
-                    "redis.call('del', KEYS[1]); " +
-                    "redis.call('publish', KEYS[2], ARGV[1]); " +
-                    "return 1; "+
-                "end; " +
-                "return nil;",
-                Arrays.<Object>asList(getName(), getChannelName()), LockPubSub.UNLOCK_MESSAGE, internalLockLeaseTime, getLockName(threadId));
-
+                        "return nil;" +
+                        "end; " +
+                        "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
+                        "if (counter > 0) then " +
+                        "redis.call('pexpire', KEYS[1], ARGV[2]); " +
+                        "return 0; " +
+                        "else " +
+                        "redis.call('del', KEYS[1]); " +
+                        "redis.call('publish', KEYS[2], ARGV[1]); " +
+                        "return 1; " +
+                        "end; " +
+                        "return nil;",
+                Arrays.asList(getName(), getChannelName()), LockPubSub.UNLOCK_MESSAGE, internalLockLeaseTime, getLockName(threadId));
     }
     
     @Override
@@ -568,8 +605,9 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         RFuture<Boolean> future = unlockInnerAsync(threadId);
 
         future.onComplete((opStatus, e) -> {
+            cancelExpirationRenewal(threadId);
+
             if (e != null) {
-                cancelExpirationRenewal(threadId);
                 result.tryFailure(e);
                 return;
             }
@@ -580,8 +618,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                 result.tryFailure(cause);
                 return;
             }
-            
-            cancelExpirationRenewal(threadId);
+
             result.trySuccess(null);
         });
 
@@ -607,7 +644,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     @Override
     public RFuture<Void> lockAsync(long leaseTime, TimeUnit unit, long currentThreadId) {
         RPromise<Void> result = new RedissonPromise<Void>();
-        RFuture<Long> ttlFuture = tryAcquireAsync(leaseTime, unit, currentThreadId);
+        RFuture<Long> ttlFuture = tryAcquireAsync(-1, leaseTime, unit, currentThreadId);
         ttlFuture.onComplete((ttl, e) -> {
             if (e != null) {
                 result.tryFailure(e);
@@ -638,7 +675,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
     private void lockAsync(long leaseTime, TimeUnit unit,
             RFuture<RedissonLockEntry> subscribeFuture, RPromise<Void> result, long currentThreadId) {
-        RFuture<Long> ttlFuture = tryAcquireAsync(leaseTime, unit, currentThreadId);
+        RFuture<Long> ttlFuture = tryAcquireAsync(-1, leaseTime, unit, currentThreadId);
         ttlFuture.onComplete((ttl, e) -> {
             if (e != null) {
                 unsubscribe(subscribeFuture, currentThreadId);
@@ -655,7 +692,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                 return;
             }
 
-            RedissonLockEntry entry = getEntry(currentThreadId);
+            RedissonLockEntry entry = subscribeFuture.getNow();
             if (entry.getLatch().tryAcquire()) {
                 lockAsync(leaseTime, unit, subscribeFuture, result, currentThreadId);
             } else {
@@ -692,7 +729,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
     @Override
     public RFuture<Boolean> tryLockAsync(long threadId) {
-        return tryAcquireOnceAsync(-1, null, threadId);
+        return tryAcquireOnceAsync(-1, -1, null, threadId);
     }
 
     @Override
@@ -713,7 +750,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
         AtomicLong time = new AtomicLong(unit.toMillis(waitTime));
         long currentTime = System.currentTimeMillis();
-        RFuture<Long> ttlFuture = tryAcquireAsync(leaseTime, unit, currentThreadId);
+        RFuture<Long> ttlFuture = tryAcquireAsync(waitTime, leaseTime, unit, currentThreadId);
         ttlFuture.onComplete((ttl, e) -> {
             if (e != null) {
                 result.tryFailure(e);
@@ -752,7 +789,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                 long elapsed = System.currentTimeMillis() - current;
                 time.addAndGet(-elapsed);
                 
-                tryLockAsync(time, leaseTime, unit, subscribeFuture, result, currentThreadId);
+                tryLockAsync(time, waitTime, leaseTime, unit, subscribeFuture, result, currentThreadId);
             });
             if (!subscribeFuture.isDone()) {
                 Timeout scheduledFuture = commandExecutor.getConnectionManager().newTimeout(new TimerTask() {
@@ -773,7 +810,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     }
 
     private void trySuccessFalse(long currentThreadId, RPromise<Boolean> result) {
-        acquireFailedAsync(currentThreadId).onComplete((res, e) -> {
+        acquireFailedAsync(-1, null, currentThreadId).onComplete((res, e) -> {
             if (e == null) {
                 result.trySuccess(false);
             } else {
@@ -782,7 +819,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         });
     }
 
-    private void tryLockAsync(AtomicLong time, long leaseTime, TimeUnit unit,
+    private void tryLockAsync(AtomicLong time, long waitTime, long leaseTime, TimeUnit unit,
             RFuture<RedissonLockEntry> subscribeFuture, RPromise<Boolean> result, long currentThreadId) {
         if (result.isDone()) {
             unsubscribe(subscribeFuture, currentThreadId);
@@ -796,7 +833,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         }
         
         long curr = System.currentTimeMillis();
-        RFuture<Long> ttlFuture = tryAcquireAsync(leaseTime, unit, currentThreadId);
+        RFuture<Long> ttlFuture = tryAcquireAsync(waitTime, leaseTime, unit, currentThreadId);
         ttlFuture.onComplete((ttl, e) -> {
                 if (e != null) {
                     unsubscribe(subscribeFuture, currentThreadId);
@@ -824,9 +861,9 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
                 // waiting for message
                 long current = System.currentTimeMillis();
-                RedissonLockEntry entry = getEntry(currentThreadId);
+                RedissonLockEntry entry = subscribeFuture.getNow();
                 if (entry.getLatch().tryAcquire()) {
-                    tryLockAsync(time, leaseTime, unit, subscribeFuture, result, currentThreadId);
+                    tryLockAsync(time, waitTime, leaseTime, unit, subscribeFuture, result, currentThreadId);
                 } else {
                     AtomicBoolean executed = new AtomicBoolean();
                     AtomicReference<Timeout> futureRef = new AtomicReference<Timeout>();
@@ -839,7 +876,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                         long elapsed = System.currentTimeMillis() - current;
                         time.addAndGet(-elapsed);
                         
-                        tryLockAsync(time, leaseTime, unit, subscribeFuture, result, currentThreadId);
+                        tryLockAsync(time, waitTime, leaseTime, unit, subscribeFuture, result, currentThreadId);
                     };
                     entry.addListener(listener);
 
@@ -855,7 +892,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                                     long elapsed = System.currentTimeMillis() - current;
                                     time.addAndGet(-elapsed);
                                     
-                                    tryLockAsync(time, leaseTime, unit, subscribeFuture, result, currentThreadId);
+                                    tryLockAsync(time, waitTime, leaseTime, unit, subscribeFuture, result, currentThreadId);
                                 }
                             }
                         }, t, TimeUnit.MILLISECONDS);

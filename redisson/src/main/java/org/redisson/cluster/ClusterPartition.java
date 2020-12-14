@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,8 @@ import java.util.Set;
 
 import org.redisson.misc.RedisURI;
 
+import static org.redisson.connection.MasterSlaveConnectionManager.MAX_SLOT;
+
 /**
  * 
  * @author Nikita Koksharov
@@ -39,7 +41,7 @@ public class ClusterPartition {
     private final Set<RedisURI> slaveAddresses = new HashSet<>();
     private final Set<RedisURI> failedSlaves = new HashSet<>();
     
-    private final BitSet slots = new BitSet();
+    private final BitSet slots = new BitSet(MAX_SLOT);
     private final Set<ClusterSlotRange> slotRanges = new HashSet<ClusterSlotRange>();
 
     private ClusterPartition parent;
@@ -86,17 +88,13 @@ public class ClusterPartition {
 
     public void addSlotRanges(Set<ClusterSlotRange> ranges) {
         for (ClusterSlotRange clusterSlotRange : ranges) {
-            for (int i = clusterSlotRange.getStartSlot(); i < clusterSlotRange.getEndSlot() + 1; i++) {
-                slots.set(i);
-            }
+            slots.set(clusterSlotRange.getStartSlot(), clusterSlotRange.getEndSlot() + 1);
         }
         slotRanges.addAll(ranges);
     }
     public void removeSlotRanges(Set<ClusterSlotRange> ranges) {
         for (ClusterSlotRange clusterSlotRange : ranges) {
-            for (int i = clusterSlotRange.getStartSlot(); i < clusterSlotRange.getEndSlot() + 1; i++) {
-                slots.clear(i);
-            }
+            slots.clear(clusterSlotRange.getStartSlot(), clusterSlotRange.getEndSlot() + 1);
         }
         slotRanges.removeAll(ranges);
     }
@@ -105,7 +103,7 @@ public class ClusterPartition {
     }
     
     public Iterable<Integer> getSlots() {
-        return (Iterable<Integer>) slots.stream()::iterator;
+        return slots.stream()::iterator;
     }
     
     public BitSet slots() {

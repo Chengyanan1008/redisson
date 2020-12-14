@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -90,7 +90,7 @@ public class RedissonPatternTopic implements RPatternTopic {
     }
     
     private RFuture<Integer> addListenerAsync(RedisPubSubListener<?> pubSubListener) {
-        RFuture<PubSubConnectionEntry> future = subscribeService.subscribe(codec, channelName, pubSubListener);
+        RFuture<PubSubConnectionEntry> future = subscribeService.psubscribe(channelName, codec, pubSubListener);
         RPromise<Integer> result = new RedissonPromise<Integer>();
         future.onComplete((res, e) -> {
             if (e != null) {
@@ -164,7 +164,7 @@ public class RedissonPatternTopic implements RPatternTopic {
             return;
         }
 
-        if (entry.removeAllListeners(channelName)) {
+        if (entry.hasListeners(channelName)) {
             subscribeService.punsubscribe(channelName, semaphore);
         } else {
             semaphore.release();

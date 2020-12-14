@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,7 @@
  */
 package org.redisson.remote;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
-import java.util.function.BiConsumer;
-
+import io.netty.util.concurrent.ScheduledFuture;
 import org.redisson.RedissonBlockingQueue;
 import org.redisson.api.RBlockingQueue;
 import org.redisson.api.RFuture;
@@ -39,7 +30,10 @@ import org.redisson.remote.ResponseEntry.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.netty.util.concurrent.ScheduledFuture;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
 
 /**
  * 
@@ -53,13 +47,13 @@ public abstract class BaseRemoteProxy {
     final CommandAsyncExecutor commandExecutor;
     private final String name;
     final String responseQueueName;
-    private final ConcurrentMap<String, ResponseEntry> responses;
+    private final Map<String, ResponseEntry> responses;
     final Codec codec;
     final String executorId;
     final BaseRemoteService remoteService;
     
     BaseRemoteProxy(CommandAsyncExecutor commandExecutor, String name, String responseQueueName,
-            ConcurrentMap<String, ResponseEntry> responses, Codec codec, String executorId, BaseRemoteService remoteService) {
+            Map<String, ResponseEntry> responses, Codec codec, String executorId, BaseRemoteService remoteService) {
         super();
         this.commandExecutor = commandExecutor;
         this.name = name;
@@ -115,59 +109,48 @@ public abstract class BaseRemoteProxy {
         return promise;
     }
 
-    protected <T extends RRemoteServiceResponse> RPromise<T> pollResponse(long timeout,
+    protected final <T extends RRemoteServiceResponse> RPromise<T> pollResponse(long timeout,
             RequestId requestId, boolean insertFirst) {
         RPromise<T> responseFuture = new RedissonPromise<T>();
 
         ResponseEntry entry;
         synchronized (responses) {
-            entry = responses.get(responseQueueName);
-            if (entry == null) {
-                entry = new ResponseEntry();
-                ResponseEntry oldEntry = responses.putIfAbsent(responseQueueName, entry);
-                if (oldEntry != null) {
-                    entry = oldEntry;
-                }
-            }
-            
-            responseFuture.onComplete((res, ex) -> {
-                if (responseFuture.isCancelled()) {
-                    synchronized (responses) {
-                        ResponseEntry e = responses.get(responseQueueName);
-                        List<Result> list = e.getResponses().get(requestId);
-                        if (list == null) {
-                            return;
-                        }
-                        
-                        for (Iterator<Result> iterator = list.iterator(); iterator.hasNext();) {
-                            Result result = iterator.next();
-                            if (result.getPromise() == responseFuture) {
-                                result.getScheduledFuture().cancel(true);
-                                iterator.remove();
-                            }
-                        }
-                        if (list.isEmpty()) {
-                            e.getResponses().remove(requestId);
-                        }
+            entry = responses.computeIfAbsent(responseQueueName, k -> new ResponseEntry());
 
-                        if (e.getResponses().isEmpty()) {
-                            responses.remove(responseQueueName, e);
-                        }
-                    }
-                }
-            });
-            
-            ScheduledFuture<?> future = commandExecutor.getConnectionManager().getGroup().schedule(new Runnable() {
-                @Override
-                public void run() {
-                    synchronized (responses) {
-                        ResponseEntry entry = responses.get(responseQueueName);
-                        if (entry == null) {
-                            return;
-                        }
-                        
-                        RemoteServiceTimeoutException ex = new RemoteServiceTimeoutException("No response after " + timeout + "ms");
-                        if (responseFuture.tryFailure(ex)) {
+            addCancelHandling(requestId, responseFuture);
+
+            ScheduledFuture<?> responseTimeoutFuture = createResponseTimeout(timeout, requestId, responseFuture);
+
+            Map<RequestId, List<Result>> entryResponses = entry.getResponses();
+            List<Result> list = entryResponses.computeIfAbsent(requestId, k -> new ArrayList<>(3));
+
+            Result res = new Result(responseFuture, responseTimeoutFuture);
+            if (insertFirst) {
+                list.add(0, res);
+            } else {
+                list.add(res);
+            }
+        }
+
+        pollResponse(entry);
+        return responseFuture;
+    }
+
+    private <T extends RRemoteServiceResponse> ScheduledFuture<?> createResponseTimeout(long timeout, RequestId requestId, RPromise<T> responseFuture) {
+        return commandExecutor.getConnectionManager().getGroup().schedule(new Runnable() {
+                    @Override
+                    public void run() {
+                        synchronized (responses) {
+                            ResponseEntry entry = responses.get(responseQueueName);
+                            if (entry == null) {
+                                return;
+                            }
+
+                            RemoteServiceTimeoutException ex = new RemoteServiceTimeoutException("No response after " + timeout + "ms");
+                            if (!responseFuture.tryFailure(ex)) {
+                                return;
+                            }
+
                             List<Result> list = entry.getResponses().get(requestId);
                             list.remove(0);
                             if (list.isEmpty()) {
@@ -178,27 +161,38 @@ public abstract class BaseRemoteProxy {
                             }
                         }
                     }
+                }, timeout, TimeUnit.MILLISECONDS);
+    }
+
+    private <T extends RRemoteServiceResponse> void addCancelHandling(RequestId requestId, RPromise<T> responseFuture) {
+        responseFuture.onComplete((res, ex) -> {
+            if (!responseFuture.isCancelled()) {
+                return;
+            }
+
+            synchronized (responses) {
+                ResponseEntry e = responses.get(responseQueueName);
+                List<Result> list = e.getResponses().get(requestId);
+                if (list == null) {
+                    return;
                 }
-            }, timeout, TimeUnit.MILLISECONDS);
 
-            Map<RequestId, List<Result>> entryResponses = entry.getResponses();
-            List<Result> list = entryResponses.get(requestId);
-            if (list == null) {
-                list = new ArrayList<>(3);
-                entryResponses.put(requestId, list);
-            }
-            
-            Result res = new Result(responseFuture, future);
-            if (insertFirst) {
-                list.add(0, res);
-            } else {
-                list.add(res);
-            }
-        }
+                for (Iterator<Result> iterator = list.iterator(); iterator.hasNext();) {
+                    Result result = iterator.next();
+                    if (result.getPromise() == responseFuture) {
+                        result.getResponseTimeoutFuture().cancel(true);
+                        iterator.remove();
+                    }
+                }
+                if (list.isEmpty()) {
+                    e.getResponses().remove(requestId);
+                }
 
-        
-        pollResponse(entry);
-        return responseFuture;
+                if (e.getResponses().isEmpty()) {
+                    responses.remove(responseQueueName, e);
+                }
+            }
+        });
     }
 
     private <V> RBlockingQueue<V> getBlockingQueue(String name, Codec codec) {
@@ -243,7 +237,7 @@ public abstract class BaseRemoteProxy {
                 }
 
                 promise = res.getPromise();
-                res.getScheduledFuture().cancel(true);
+                res.getResponseTimeoutFuture().cancel(true);
                 
                 if (entry.getResponses().isEmpty()) {
                     responses.remove(responseQueueName, entry);

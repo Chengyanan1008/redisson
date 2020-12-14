@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,14 +19,15 @@ import org.redisson.api.RedissonClient;
 import org.redisson.spring.session.RedissonSessionRepository.RedissonSession;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.session.ReactiveSessionRepository;
-
 import reactor.core.publisher.Mono;
 
 /**
- * 
+ * Deprecated. Use spring-session implementation based on Redisson Redis Data module
+ *
  * @author Nikita Koksharov
  *
  */
+@Deprecated
 public class ReactiveRedissonSessionRepository implements ReactiveSessionRepository<RedissonSession> {
 
     private final RedissonSessionRepository repository;

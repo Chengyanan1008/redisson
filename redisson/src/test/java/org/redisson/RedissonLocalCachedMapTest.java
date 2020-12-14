@@ -314,9 +314,10 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
         assertThat(cache1.size()).isEqualTo(2);
         assertThat(cache2.size()).isEqualTo(2);
 
+        
         map1.clearLocalCache();
         
-        Thread.sleep(50);
+        assertThat(redisson.getKeys().count()).isEqualTo(1);
 
         assertThat(cache1.size()).isZero();
         assertThat(cache2.size()).isZero();
@@ -581,6 +582,7 @@ public class RedissonLocalCachedMapTest extends BaseMapTest {
         SimpleKey key1 = new SimpleKey("2");
         SimpleValue value1 = new SimpleValue("4");
         assertThat(map.fastPutIfAbsent(key1, value1)).isTrue();
+        Thread.sleep(50);
         assertThat(cache.size()).isEqualTo(2);
         assertThat(map.get(key1)).isEqualTo(value1);
     }

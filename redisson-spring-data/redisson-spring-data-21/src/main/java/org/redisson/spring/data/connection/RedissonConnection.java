@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,20 +54,11 @@ import org.redisson.client.codec.StringCodec;
 import org.redisson.client.protocol.RedisCommand;
 import org.redisson.client.protocol.RedisCommands;
 import org.redisson.client.protocol.RedisStrictCommand;
+import org.redisson.client.protocol.convertor.BooleanNullSafeReplayConvertor;
 import org.redisson.client.protocol.convertor.BooleanReplayConvertor;
 import org.redisson.client.protocol.convertor.DoubleReplayConvertor;
 import org.redisson.client.protocol.convertor.VoidReplayConvertor;
-import org.redisson.client.protocol.decoder.CodecDecoder;
-import org.redisson.client.protocol.decoder.GeoDistanceDecoder;
-import org.redisson.client.protocol.decoder.ListMultiDecoder;
-import org.redisson.client.protocol.decoder.ListScanResult;
-import org.redisson.client.protocol.decoder.ListScanResultReplayDecoder;
-import org.redisson.client.protocol.decoder.LongMultiDecoder;
-import org.redisson.client.protocol.decoder.MapScanResult;
-import org.redisson.client.protocol.decoder.MultiDecoder;
-import org.redisson.client.protocol.decoder.ObjectListReplayDecoder;
-import org.redisson.client.protocol.decoder.ObjectSetReplayDecoder;
-import org.redisson.client.protocol.decoder.TimeLongObjectDecoder;
+import org.redisson.client.protocol.decoder.*;
 import org.redisson.command.CommandAsyncService;
 import org.redisson.command.CommandBatchService;
 import org.redisson.connection.MasterSlaveEntry;
@@ -75,11 +66,7 @@ import org.redisson.misc.RPromise;
 import org.redisson.misc.RedissonPromise;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
-import org.springframework.data.geo.Circle;
-import org.springframework.data.geo.Distance;
-import org.springframework.data.geo.GeoResults;
-import org.springframework.data.geo.Metric;
-import org.springframework.data.geo.Point;
+import org.springframework.data.geo.*;
 import org.springframework.data.redis.RedisSystemException;
 import org.springframework.data.redis.connection.AbstractRedisConnection;
 import org.springframework.data.redis.connection.DataType;
@@ -98,6 +85,7 @@ import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.types.Expiration;
 import org.springframework.data.redis.core.types.RedisClientInfo;
 import org.springframework.util.Assert;
+import org.springframework.util.ObjectUtils;
 import org.springframework.util.ReflectionUtils;
 
 /**
@@ -124,6 +112,12 @@ public class RedissonConnection extends AbstractRedisConnection {
     public void close() throws DataAccessException {
         super.close();
         
+        if (isQueueing()) {
+            CommandBatchService es = (CommandBatchService) executorService;
+            if (!es.isExecuted()) {
+                discard();
+            }
+        }
         closed = true;
     }
     
@@ -243,80 +237,16 @@ public class RedissonConnection extends AbstractRedisConnection {
         return read(key, StringCodec.INSTANCE, RedisCommands.EXISTS, key);
     }
     
-    private void checkExecution(final RPromise<Long> result, final AtomicReference<Throwable> failed,
-            final AtomicLong count, final AtomicLong executed) {
-        if (executed.decrementAndGet() == 0) {
-            if (failed.get() != null) {
-                if (count.get() > 0) {
-                    RedisException ex = new RedisException("" + count.get() + " keys has been deleted. But one or more nodes has an error", failed.get());
-                    result.tryFailure(ex);
-                } else {
-                    result.tryFailure(failed.get());
-                }
-            } else {
-                result.trySuccess(count.get());
-            }
-        }
-    }
-
-    private RFuture<Long> executeAsync(RedisStrictCommand<Long> command, byte[] ... keys) {
-        if (!executorService.getConnectionManager().isClusterMode()) {
-            return executorService.writeAsync(null, command, Arrays.asList(keys).toArray());
-        }
-
-        Map<MasterSlaveEntry, List<byte[]>> range2key = new HashMap<MasterSlaveEntry, List<byte[]>>();
-        for (byte[] key : keys) {
-            int slot = executorService.getConnectionManager().calcSlot(key);
-            MasterSlaveEntry entry = executorService.getConnectionManager().getEntry(slot);
-            List<byte[]> list = range2key.get(entry);
-            if (list == null) {
-                list = new ArrayList<byte[]>();
-                range2key.put(entry, list);
-            }
-            list.add(key);
-        }
-
-        final RPromise<Long> result = new RedissonPromise<Long>();
-        final AtomicReference<Throwable> failed = new AtomicReference<Throwable>();
-        final AtomicLong count = new AtomicLong();
-        final AtomicLong executed = new AtomicLong(range2key.size());
-        BiConsumer<List<?>, Throwable> listener = new BiConsumer<List<?>, Throwable>() {
-            @Override
-            public void accept(List<?> r, Throwable u) {
-                if (u == null) {    
-                    List<Long> result = (List<Long>) r;
-                    for (Long res : result) {
-                        if (res != null) {
-                            count.addAndGet(res);
-                        }
-                    }
-                } else {
-                    failed.set(u);
-                }
-                
-                checkExecution(result, failed, count, executed);
-            }
-        };
-
-        for (Entry<MasterSlaveEntry, List<byte[]>> entry : range2key.entrySet()) {
-            CommandBatchService es = new CommandBatchService(executorService.getConnectionManager());
-            for (byte[] key : entry.getValue()) {
-                es.writeAsync(entry.getKey(), null, command, key);
-            }
-
-            RFuture<List<?>> future = es.executeAsync();
-            future.onComplete(listener);
-        }
-
-        return result;
-    }
-    
     @Override
     public Long del(byte[]... keys) {
-        RFuture<Long> f = executeAsync(RedisCommands.DEL, keys);
-        return sync(f);
+        return write(keys[0], LongCodec.INSTANCE, RedisCommands.DEL, Arrays.asList(keys).toArray());
     }
-    
+
+    @Override
+    public Long unlink(byte[]... keys) {
+        return write(keys[0], LongCodec.INSTANCE, RedisCommands.UNLINK, Arrays.asList(keys).toArray());
+    }
+
     private static final RedisStrictCommand<DataType> TYPE = new RedisStrictCommand<DataType>("TYPE", new DataTypeConvertor());
 
     @Override
@@ -583,10 +513,10 @@ public class RedissonConnection extends AbstractRedisConnection {
     
     @Override
     public List<byte[]> mGet(byte[]... keys) {
-        return write(keys[0], ByteArrayCodec.INSTANCE, MGET, Arrays.asList(keys).toArray());
+        return read(keys[0], ByteArrayCodec.INSTANCE, MGET, Arrays.asList(keys).toArray());
     }
 
-    private static final RedisCommand<Boolean> SET = new RedisCommand<Boolean>("SET", new BooleanReplayConvertor());
+    private static final RedisCommand<Boolean> SET = new RedisCommand<>("SET", new BooleanNullSafeReplayConvertor());
     
     @Override
     public Boolean set(byte[] key, byte[] value) {
@@ -609,13 +539,13 @@ public class RedissonConnection extends AbstractRedisConnection {
             }
         } else {
             if (option == null || option == SetOption.UPSERT) {
-                return write(key, StringCodec.INSTANCE, RedisCommands.SET, key, value, "PX", expiration.getExpirationTimeInMilliseconds());
+                return write(key, StringCodec.INSTANCE, SET, key, value, "PX", expiration.getExpirationTimeInMilliseconds());
             }
             if (option == SetOption.SET_IF_ABSENT) {
-                return write(key, StringCodec.INSTANCE, RedisCommands.SET, key, value, "PX", expiration.getExpirationTimeInMilliseconds(), "NX");
+                return write(key, StringCodec.INSTANCE, SET, key, value, "PX", expiration.getExpirationTimeInMilliseconds(), "NX");
             }
             if (option == SetOption.SET_IF_PRESENT) {
-                return write(key, StringCodec.INSTANCE, RedisCommands.SET, key, value, "PX", expiration.getExpirationTimeInMilliseconds(), "XX");
+                return write(key, StringCodec.INSTANCE, SET, key, value, "PX", expiration.getExpirationTimeInMilliseconds(), "XX");
             }
         }
         throw new IllegalArgumentException();
@@ -988,9 +918,11 @@ public class RedissonConnection extends AbstractRedisConnection {
         return read(key, ByteArrayCodec.INSTANCE, RedisCommands.SRANDMEMBER_SINGLE, key);
     }
 
+    private static final RedisCommand<List<Object>> SRANDMEMBER = new RedisCommand<>("SRANDMEMBER", new ObjectListReplayDecoder<>());
+
     @Override
     public List<byte[]> sRandMember(byte[] key, long count) {
-        return read(key, ByteArrayCodec.INSTANCE, RedisCommands.SRANDMEMBER, key, count);
+        return read(key, ByteArrayCodec.INSTANCE, SRANDMEMBER, key, count);
     }
 
     @Override
@@ -1080,12 +1012,16 @@ public class RedissonConnection extends AbstractRedisConnection {
         return read(key, ByteArrayCodec.INSTANCE, ZRANGE_ENTRY, key, start, end, "WITHSCORES");
     }
 
-    private String value(Object score, boolean inclusive, String defaultValue) {
+    private String value(Range.Boundary boundary, String defaultValue) {
+        if (boundary == null) {
+            return defaultValue;
+        }
+        Object score = boundary.getValue();
         if (score == null) {
             return defaultValue;
         }
         StringBuilder element = new StringBuilder();
-        if (!inclusive) {
+        if (!boundary.isIncluding()) {
             element.append("(");
         } else {
             if (!(score instanceof Double)) {
@@ -1095,8 +1031,9 @@ public class RedissonConnection extends AbstractRedisConnection {
         if (score instanceof Double) {
             if (Double.isInfinite((Double) score)) {
                 element.append((Double)score > 0 ? "+inf" : "-inf");
+            } else {
+                element.append(BigDecimal.valueOf((Double)score).toPlainString());
             }
-            element.append(BigDecimal.valueOf((Double)score).toPlainString());
         } else {
             element.append(score);
         }
@@ -1134,8 +1071,8 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Set<Tuple> zRangeByScoreWithScores(byte[] key, Range range, Limit limit) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-inf");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+inf");
+        String min = value(range.getMin(), "-inf");
+        String max = value(range.getMax(), "+inf");
         
         List<Object> args = new ArrayList<Object>();
         args.add(key);
@@ -1192,8 +1129,8 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Set<byte[]> zRevRangeByScore(byte[] key, Range range, Limit limit) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-inf");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+inf");
+        String min = value(range.getMin(), "-inf");
+        String max = value(range.getMax(), "+inf");
         
         List<Object> args = new ArrayList<Object>();
         args.add(key);
@@ -1222,8 +1159,8 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Set<Tuple> zRevRangeByScoreWithScores(byte[] key, Range range, Limit limit) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-inf");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+inf");
+        String min = value(range.getMin(), "-inf");
+        String max = value(range.getMax(), "+inf");
         
         List<Object> args = new ArrayList<Object>();
         args.add(key);
@@ -1249,8 +1186,8 @@ public class RedissonConnection extends AbstractRedisConnection {
     
     @Override
     public Long zCount(byte[] key, Range range) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-inf");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+inf");
+        String min = value(range.getMin(), "-inf");
+        String max = value(range.getMax(), "+inf");
         return read(key, StringCodec.INSTANCE, ZCOUNT, key, min, max);
     }
 
@@ -1279,8 +1216,8 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Long zRemRangeByScore(byte[] key, Range range) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-inf");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+inf");
+        String min = value(range.getMin(), "-inf");
+        String max = value(range.getMax(), "+inf");
         return write(key, StringCodec.INSTANCE, ZREMRANGEBYSCORE, key, min, max);
     }
 
@@ -1336,8 +1273,8 @@ public class RedissonConnection extends AbstractRedisConnection {
         return write(destKey, StringCodec.INSTANCE, ZINTERSTORE, args.toArray());
     }
 
-    private static final RedisCommand<ListScanResult<Object>> ZSCAN = new RedisCommand<ListScanResult<Object>>("ZSCAN", new ListMultiDecoder(new LongMultiDecoder(), new ScoredSortedListReplayDecoder(), new ListScanResultReplayDecoder()));
-    
+    private static final RedisCommand<ListScanResult<Object>> ZSCAN = new RedisCommand<>("ZSCAN", new ListMultiDecoder2(new ListScanResultReplayDecoder(), new ScoredSortedListReplayDecoder()));
+
     @Override
     public Cursor<Tuple> zScan(byte[] key, ScanOptions options) {
         return new KeyBoundCursor<Tuple>(key, 0, options) {
@@ -1377,8 +1314,8 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Set<byte[]> zRangeByScore(byte[] key, Range range) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-inf");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+inf");
+        String min = value(range.getMin(), "-inf");
+        String max = value(range.getMax(), "+inf");
         return read(key, ByteArrayCodec.INSTANCE, RedisCommands.ZRANGEBYSCORE, key, min, max);
     }
 
@@ -1389,8 +1326,8 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Set<byte[]> zRangeByScore(byte[] key, Range range, Limit limit) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-inf");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+inf");
+        String min = value(range.getMin(), "-inf");
+        String max = value(range.getMax(), "+inf");
         
         List<Object> args = new ArrayList<Object>();
         args.add(key);
@@ -1418,13 +1355,13 @@ public class RedissonConnection extends AbstractRedisConnection {
         List<Object> params = new ArrayList<Object>();
         params.add(key);
         if (range.getMin() != null) {
-            String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-");
+            String min = value(range.getMin(), "-");
             params.add(min);
         } else {
             params.add("-");
         }
         if (range.getMax() != null) {
-            String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+");
+            String max = value(range.getMax(), "+");
             params.add(max);
         } else {
             params.add("+");
@@ -1434,8 +1371,8 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Set<byte[]> zRangeByLex(byte[] key, Range range, Limit limit) {
-        String min = value(range.getMin().getValue(), range.getMin().isIncluding(), "-");
-        String max = value(range.getMax().getValue(), range.getMax().isIncluding(), "+");
+        String min = value(range.getMin(), "-");
+        String max = value(range.getMax(), "+");
         
         List<Object> args = new ArrayList<Object>();
         args.add(key);
@@ -1608,6 +1545,10 @@ public class RedissonConnection extends AbstractRedisConnection {
     }
 
     protected void filterResults(BatchResult<?> result) {
+        if (result.getResponses().isEmpty()) {
+            return;
+        }
+
         int t = 0;
         for (Integer index : indexToRemove) {
             index -= t;
@@ -2035,7 +1976,7 @@ public class RedissonConnection extends AbstractRedisConnection {
 
     @Override
     public Distance geoDist(byte[] key, byte[] member1, byte[] member2, Metric metric) {
-        return read(key, DoubleCodec.INSTANCE, new RedisCommand<Distance>("GEODIST", new DistanceConvertor(metric)), key, member1, member2, metric.getAbbreviation());
+        return read(key, DoubleCodec.INSTANCE, new RedisCommand<Distance>("GEODIST", new DistanceConvertor(metric)), key, member1, member2, getAbbreviation(metric));
     }
 
     private static final RedisCommand<List<Object>> GEOHASH = new RedisCommand<List<Object>>("GEOHASH", new ObjectListReplayDecoder<Object>());
@@ -2050,7 +1991,7 @@ public class RedissonConnection extends AbstractRedisConnection {
         return read(key, StringCodec.INSTANCE, GEOHASH, params.toArray());
     }
 
-    private final MultiDecoder<Map<Object, Object>> geoDecoder = new ListMultiDecoder(new PointDecoder(), new ObjectListReplayDecoder2(ListMultiDecoder.RESET));
+    private final MultiDecoder<Map<Object, Object>> geoDecoder = new ListMultiDecoder2(new ObjectListReplayDecoder2(), new PointDecoder());
 
     @Override
     public List<Point> geoPos(byte[] key, byte[]... members) {
@@ -2066,14 +2007,14 @@ public class RedissonConnection extends AbstractRedisConnection {
         return BigDecimal.valueOf(longitude).toPlainString();
     }
 
-    private final MultiDecoder<GeoResults<GeoLocation<byte[]>>> postitionDecoder = new ListMultiDecoder(new CodecDecoder(), new PointDecoder(), new ObjectListReplayDecoder(ListMultiDecoder.RESET), new GeoResultsDecoder());
+    private final MultiDecoder<GeoResults<GeoLocation<byte[]>>> postitionDecoder = new ListMultiDecoder2(new GeoResultsDecoder(), new CodecDecoder(), new PointDecoder(), new ObjectListReplayDecoder());
     
     @Override
     public GeoResults<GeoLocation<byte[]>> geoRadius(byte[] key, Circle within) {
-        RedisCommand<GeoResults<GeoLocation<byte[]>>> command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUS", new GeoResultsDecoder());
+        RedisCommand<GeoResults<GeoLocation<byte[]>>> command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUS_RO", new GeoResultsDecoder());
         return read(key, ByteArrayCodec.INSTANCE, command, key, 
                         convert(within.getCenter().getX()), convert(within.getCenter().getY()), 
-                        within.getRadius().getValue(), within.getRadius().getMetric().getAbbreviation());
+                        within.getRadius().getValue(), getAbbreviation(within.getRadius().getMetric()));
     }
     
     @Override
@@ -2083,15 +2024,15 @@ public class RedissonConnection extends AbstractRedisConnection {
         params.add(convert(within.getCenter().getX()));
         params.add(convert(within.getCenter().getY()));
         params.add(within.getRadius().getValue());
-        params.add(within.getRadius().getMetric().getAbbreviation());
+        params.add(getAbbreviation(within.getRadius().getMetric()));
         
         RedisCommand<GeoResults<GeoLocation<byte[]>>> command;
         if (args.getFlags().contains(GeoRadiusCommandArgs.Flag.WITHCOORD)) {
-            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUS", postitionDecoder);
+            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUS_RO", postitionDecoder);
             params.add("WITHCOORD");
         } else {
-            MultiDecoder<GeoResults<GeoLocation<byte[]>>> distanceDecoder = new ListMultiDecoder(new GeoDistanceDecoder(), new GeoResultsDecoder(within.getRadius().getMetric()));
-            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUS", distanceDecoder);
+            MultiDecoder<GeoResults<GeoLocation<byte[]>>> distanceDecoder = new ListMultiDecoder2(new GeoResultsDecoder(within.getRadius().getMetric()), new GeoDistanceDecoder());
+            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUS_RO", distanceDecoder);
             params.add("WITHDIST");
         }
         
@@ -2106,16 +2047,23 @@ public class RedissonConnection extends AbstractRedisConnection {
         return read(key, ByteArrayCodec.INSTANCE, command, params.toArray());
     }
 
+    private String getAbbreviation(Metric metric) {
+        if (ObjectUtils.nullSafeEquals(Metrics.NEUTRAL, metric)) {
+            return DistanceUnit.METERS.getAbbreviation();
+        }
+        return metric.getAbbreviation();
+    }
+
     @Override
     public GeoResults<GeoLocation<byte[]>> geoRadiusByMember(byte[] key, byte[] member, double radius) {
         return geoRadiusByMember(key, member, new Distance(radius, DistanceUnit.METERS));
     }
 
-    private static final RedisCommand<GeoResults<GeoLocation<byte[]>>> GEORADIUSBYMEMBER = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUSBYMEMBER", new GeoResultsDecoder());
+    private static final RedisCommand<GeoResults<GeoLocation<byte[]>>> GEORADIUSBYMEMBER = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUSBYMEMBER_RO", new GeoResultsDecoder());
     
     @Override
     public GeoResults<GeoLocation<byte[]>> geoRadiusByMember(byte[] key, byte[] member, Distance radius) {
-        return read(key, ByteArrayCodec.INSTANCE, GEORADIUSBYMEMBER, key, member, radius.getValue(), radius.getMetric().getAbbreviation());
+        return read(key, ByteArrayCodec.INSTANCE, GEORADIUSBYMEMBER, key, member, radius.getValue(), getAbbreviation(radius.getMetric()));
     }
 
     @Override
@@ -2125,15 +2073,15 @@ public class RedissonConnection extends AbstractRedisConnection {
         params.add(key);
         params.add(member);
         params.add(radius.getValue());
-        params.add(radius.getMetric().getAbbreviation());
+        params.add(getAbbreviation(radius.getMetric()));
         
         RedisCommand<GeoResults<GeoLocation<byte[]>>> command;
         if (args.getFlags().contains(GeoRadiusCommandArgs.Flag.WITHCOORD)) {
-            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUSBYMEMBER", postitionDecoder);
+            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUSBYMEMBER_RO", postitionDecoder);
             params.add("WITHCOORD");
         } else {
-            MultiDecoder<GeoResults<GeoLocation<byte[]>>> distanceDecoder = new ListMultiDecoder(new GeoDistanceDecoder(), new GeoResultsDecoder(radius.getMetric()));
-            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUSBYMEMBER", distanceDecoder);
+            MultiDecoder<GeoResults<GeoLocation<byte[]>>> distanceDecoder = new ListMultiDecoder2(new GeoResultsDecoder(radius.getMetric()), new GeoDistanceDecoder());
+            command = new RedisCommand<GeoResults<GeoLocation<byte[]>>>("GEORADIUSBYMEMBER_RO", distanceDecoder);
             params.add("WITHDIST");
         }
         

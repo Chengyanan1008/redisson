@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,9 +27,14 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 
+import org.redisson.api.BatchResult;
 import org.redisson.api.RFuture;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.RedisException;
 import org.redisson.client.codec.ByteArrayCodec;
 import org.redisson.client.codec.LongCodec;
 import org.redisson.client.codec.StringCodec;
@@ -38,7 +43,11 @@ import org.redisson.client.protocol.RedisCommands;
 import org.redisson.client.protocol.RedisStrictCommand;
 import org.redisson.client.protocol.decoder.ObjectListReplayDecoder;
 import org.redisson.client.protocol.decoder.StringMapDataDecoder;
+import org.redisson.command.CommandBatchService;
 import org.redisson.connection.MasterSlaveEntry;
+import org.redisson.misc.RPromise;
+import org.redisson.misc.RedissonPromise;
+import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.data.redis.connection.ClusterInfo;
 import org.springframework.data.redis.connection.RedisClusterConnection;
 import org.springframework.data.redis.connection.RedisClusterNode;
@@ -375,6 +384,138 @@ public class RedissonClusterConnection extends RedissonConnection implements Red
         RFuture<List<String>> f = executorService.readAsync(entry, StringCodec.INSTANCE, RedisCommands.CLIENT_LIST);
         List<String> list = syncFuture(f);
         return CONVERTER.convert(list.toArray(new String[list.size()]));
+    }
+
+    @Override
+    public void rename(byte[] oldName, byte[] newName) {
+        if (isPipelined()) {
+            throw new InvalidDataAccessResourceUsageException("Clustered rename is not supported in a pipeline");
+        }
+
+        if (redisson.getConnectionManager().calcSlot(oldName) == redisson.getConnectionManager().calcSlot(newName)) {
+            super.rename(oldName, newName);
+            return;
+        }
+
+        final byte[] value = dump(oldName);
+
+        if (null != value) {
+
+            final Long sourceTtlInSeconds = ttl(oldName);
+
+            final long ttlInMilliseconds;
+            if (null != sourceTtlInSeconds && sourceTtlInSeconds > 0) {
+                ttlInMilliseconds = sourceTtlInSeconds * 1000;
+            } else {
+                ttlInMilliseconds = 0;
+            }
+
+            restore(newName, ttlInMilliseconds, value);
+            del(oldName);
+        }
+    }
+
+    @Override
+    public Boolean renameNX(byte[] oldName, byte[] newName) {
+        if (isPipelined()) {
+            throw new InvalidDataAccessResourceUsageException("Clustered rename is not supported in a pipeline");
+        }
+
+        if (redisson.getConnectionManager().calcSlot(oldName) == redisson.getConnectionManager().calcSlot(newName)) {
+            return super.renameNX(oldName, newName);
+        }
+
+        final byte[] value = dump(oldName);
+
+        if (null != value && !exists(newName)) {
+
+            final Long sourceTtlInSeconds = ttl(oldName);
+
+            final long ttlInMilliseconds;
+            if (null != sourceTtlInSeconds && sourceTtlInSeconds > 0) {
+                ttlInMilliseconds = sourceTtlInSeconds * 1000;
+            } else {
+                ttlInMilliseconds = 0;
+            }
+
+            restore(newName, ttlInMilliseconds, value);
+            del(oldName);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private void checkExecution(RPromise<Long> result, AtomicReference<Throwable> failed,
+                                AtomicLong count, AtomicLong executed) {
+        if (executed.decrementAndGet() == 0) {
+            if (failed.get() != null) {
+                if (count.get() > 0) {
+                    RedisException ex = new RedisException("" + count.get() + " keys has been deleted. But one or more nodes has an error", failed.get());
+                    result.tryFailure(ex);
+                } else {
+                    result.tryFailure(failed.get());
+                }
+            } else {
+                result.trySuccess(count.get());
+            }
+        }
+    }
+
+    private RFuture<Long> executeAsync(RedisStrictCommand<Long> command, byte[] ... keys) {
+        Map<MasterSlaveEntry, List<byte[]>> range2key = new HashMap<>();
+        for (byte[] key : keys) {
+            int slot = executorService.getConnectionManager().calcSlot(key);
+            MasterSlaveEntry entry = executorService.getConnectionManager().getEntry(slot);
+            List<byte[]> list = range2key.computeIfAbsent(entry, k -> new ArrayList<>());
+            list.add(key);
+        }
+
+        RPromise<Long> result = new RedissonPromise<>();
+        AtomicReference<Throwable> failed = new AtomicReference<>();
+        AtomicLong count = new AtomicLong();
+        AtomicLong executed = new AtomicLong(range2key.size());
+        BiConsumer<BatchResult<?>, Throwable> listener = (r, u) -> {
+            if (u == null) {
+                List<Long> result1 = (List<Long>) r.getResponses();
+                for (Long res : result1) {
+                    if (res != null) {
+                        count.addAndGet(res);
+                    }
+                }
+            } else {
+                failed.set(u);
+            }
+
+            checkExecution(result, failed, count, executed);
+        };
+
+        for (Entry<MasterSlaveEntry, List<byte[]>> entry : range2key.entrySet()) {
+            CommandBatchService es = new CommandBatchService(executorService.getConnectionManager());
+            for (byte[] key : entry.getValue()) {
+                es.writeAsync(entry.getKey(), null, command, key);
+            }
+
+            RFuture<BatchResult<?>> future = es.executeAsync();
+            future.onComplete(listener);
+        }
+
+        return result;
+    }
+
+    @Override
+    public Long del(byte[]... keys) {
+        if (isQueueing() || isPipelined()) {
+            for (byte[] key: keys) {
+                write(key, LongCodec.INSTANCE, RedisCommands.DEL, key);
+            }
+
+            return null;
+        }
+
+        RFuture<Long> f = executeAsync(RedisCommands.DEL, keys);
+        return sync(f);
     }
 
 }

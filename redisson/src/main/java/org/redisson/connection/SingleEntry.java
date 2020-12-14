@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,8 @@ import org.redisson.misc.RedisURI;
  */
 public class SingleEntry extends MasterSlaveEntry {
 
-    public SingleEntry(ConnectionManager connectionManager, MasterSlaveServersConfig config) {
-        super(connectionManager, config);
+    public SingleEntry(ConnectionManager connectionManager, MasterSlaveServersConfig config, String sslHostname) {
+        super(connectionManager, config, sslHostname);
     }
 
     @Override

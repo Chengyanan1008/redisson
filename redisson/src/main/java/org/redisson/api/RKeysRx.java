@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-2019 Nikita Koksharov
+ * Copyright (c) 2013-2020 Nikita Koksharov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,12 @@
  */
 package org.redisson.api;
 
-import java.util.Collection;
-import java.util.concurrent.TimeUnit;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 
-import io.reactivex.Completable;
-import io.reactivex.Flowable;
-import io.reactivex.Maybe;
-import io.reactivex.Single;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 
@@ -209,9 +208,6 @@ public interface RKeysRx {
      */
     Single<Integer> getSlot(String key);
 
-    @Deprecated
-    Single<Collection<String>> findKeysByPattern(String pattern);
-
     /**
      * Get random key
      *
@@ -274,6 +270,15 @@ public interface RKeysRx {
     Completable flushdb();
 
     /**
+     * Swap two databases.
+     * <p>
+     * Requires Redis 4.0+
+     *
+     * @return void
+     */
+    Completable swapdb(int db1, int db2);
+
+    /**
      * Delete all the keys of all the existing databases
      *
      * Uses <code>FLUSHALL</code> Redis command.
@@ -281,5 +286,25 @@ public interface RKeysRx {
      * @return void
      */
     Completable flushall();
+
+    /**
+     * Delete all keys of currently selected database
+     * in background without blocking server.
+     * <p>
+     * Requires Redis 4.0+
+     *
+     * @return void
+     */
+    Completable flushdbParallel();
+
+    /**
+     * Delete all keys of all existing databases
+     * in background without blocking server.
+     * <p>
+     * Requires Redis 4.0+
+     *
+     * @return void
+     */
+    Completable flushallParallel();
 
 }
